@@ -840,18 +840,19 @@ end
 # Run Scenario Function
 # =====================
 
-function run_scenario(scenario::Symbol, params, policy_matrix)
+function run_scenario(scenario::Symbol, params, policy_configs)
 
     # Get policy parameters
-    t, θ_avi, σ, p = policy_matrix[scenario]
+    #t, θ_avi, σ, p = policy_matrix[scenario]
 
     # Build config
-    config = (
-        t=t,
-        θ_avi=θ_avi,
-        σ=σ,
-        p=p
-    )
+    #config = (
+    #    t=t,
+    #    θ_avi=θ_avi,
+    #    σ=σ,
+    #    p=p
+    #)
+    config = getproperty(policy_configs, scenario)
 
     # Build and solve
     model = build_unified_model(params, config)
@@ -939,7 +940,8 @@ function extract_all_solutions(results)
     return solutions
 end
 
-export params, build_unified_model, run_scenario, extract_solution, extract_all_solutions
+export params, tax_credit_rate, build_unified_model, run_scenario, extract_solution, extract_all_solutions
+export FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
 
 end # module SAFPolicy
 

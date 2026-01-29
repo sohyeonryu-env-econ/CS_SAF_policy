@@ -1,5 +1,5 @@
 # analysis.jl
-include("SAFModel.jl")
+include(joinpath(@__DIR__, "SAFModel.jl"))
 using .SAFModel
 using JLD2
 using DataFrames
@@ -11,17 +11,59 @@ using Printf
 # =====================
 function display_comparison_tables(solutions, params, policy_configs;
     scenarios=nothing,
-    title="RESULTS")
+    title="RESULTS",
+    show_policy_params=false,  # ⭐ Target 분석용 옵션
+    equivalent_policies=nothing)  # ⭐ Target 분석용 데이터
 
     println("\n" * "="^130)
     println(title)
     println("="^130)
 
+    # ⭐ Policy Parameters (Target 분석에만 표시)
+    if show_policy_params && !isnothing(equivalent_policies)
+        policy_labels = Dict(
+            :carbontax => ("Carbon Tax", "Carbon Tax (\$/ton CO2e)"),
+            :rfs => ("RFS Aviation", "Mandate Share"),
+            :lcfs => ("LCFS", "CI Reduction (σ)"),
+            :taxcredit => ("Tax Credit", "Rate (\$/gal)")
+        )
+
+        println("\n--- Policy Parameters ---")
+        param_df = DataFrame(
+            Policy=String[],
+            Parameter_Name=String[],
+            Parameter_Value=Float64[],
+            Actual_SAF=Float64[]
+        )
+
+        for policy_type in [:carbontax, :rfs, :lcfs, :taxcredit]
+            if haskey(equivalent_policies, policy_type)
+                result = equivalent_policies[policy_type]
+                config = result.config
+                label, param_name = policy_labels[policy_type]
+
+                param_value = if policy_type == :carbontax
+                    config.t
+                elseif policy_type == :rfs
+                    config.θ_avi
+                elseif policy_type == :lcfs
+                    config.σ
+                else
+                    config.p
+                end
+
+                push!(param_df, (label, param_name, param_value, result.actual_saf))
+            end
+        end
+
+        show(param_df, allrows=true)
+    end
+
     # Calculate implicit taxes
     implicit_taxes = calculate_all_implicit_taxes(solutions, params, policy_configs)
 
     tables = [
-        ("Implicit Taxes/Subsidies (\$/gallon)", make_implicit_tax_table(implicit_taxes, params; scenarios=scenarios)),
+        ("Implicit Taxes/Subsidies (\$/gallon)", make_implicit_tax_table(implicit_taxes, params; scenarios=scenarios, exclude_statusquo=true)),
         ("Production", make_production_table(solutions, params; scenarios=scenarios)),
         ("Demand", make_demand_table(solutions; scenarios=scenarios)),
         ("Prices", make_price_table(solutions; scenarios=scenarios)),
@@ -52,7 +94,7 @@ function calculate_implicit_taxes(solution, params, config)
     θ_avi = config.θ_avi
     σ = config.σ
     p = config.p
-    t, θ_avi, σ, p = config
+    #t, θ_avi, σ, p = config
 
     # Get coefficients
     delta = params.coeff.delta
@@ -125,9 +167,13 @@ end
 """
 Create implicit tax table
 """
-function make_implicit_tax_table(implicit_taxes, params; scenarios=nothing)
+function make_implicit_tax_table(implicit_taxes, params; scenarios=nothing, exclude_statusquo=true)
     scenario_list = isnothing(scenarios) ? collect(keys(implicit_taxes)) : scenarios
     labels = params.meta[:process_labels]
+
+    if exclude_statusquo
+        scenario_list = filter(s -> s != :statusquo, scenario_list)
+    end
 
     AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
@@ -455,107 +501,6 @@ function make_duals_table(solutions; scenarios=nothing)
     return df
 end
 
-"""
-Display all comparison tables
-"""
-function display_equivalent_policy_results(equivalent_solutions, params, target_saf, equivalent_policies)
-
-    policy_labels = Dict(
-        :carbontax => ("Carbon Tax", "Carbon Tax (\$/ton CO2e)"),
-        :rfs => ("RFS Aviation", "Mandate Share"),
-        :lcfs => ("LCFS", "CI Reduction (σ)"),
-        :taxcredit => ("Tax Credit", "Rate (\$/gal)")
-    )
-
-    println("\n" * "="^130)
-    println("EQUIVALENT POLICY COMPARISON (Target SAF = $(target_saf) billion gallons)")
-    println("="^130)
-
-    # ✅ Policy configs 생성
-    policy_configs = (
-        carbontax=equivalent_policies[:carbontax].config,
-        rfs=equivalent_policies[:rfs].config,
-        lcfs=equivalent_policies[:lcfs].config,
-        taxcredit=equivalent_policies[:taxcredit].config
-    )
-
-    # ✅ Implicit taxes 계산
-    implicit_taxes = calculate_all_implicit_taxes(equivalent_solutions, params, policy_configs)
-
-
-    # Policy Parameters
-    println("\n--- Policy Parameters ---")
-    param_df = DataFrame(
-        Policy=String[],
-        Parameter_Name=String[],
-        Parameter_Value=Float64[],
-        Actual_SAF=Float64[]
-    )
-
-    for policy_type in [:carbontax, :rfs, :lcfs, :taxcredit]
-        result = equivalent_policies[policy_type]
-        config = result.config
-        label, param_name = policy_labels[policy_type]
-
-        param_value = if policy_type == :carbontax
-            config.t
-        elseif policy_type == :rfs
-            config.θ_avi
-        elseif policy_type == :lcfs
-            config.σ
-        else
-            config.p
-        end
-
-        push!(param_df, (label, param_name, param_value, result.actual_saf))
-    end
-
-    show(param_df, allrows=true)
-
-    # Implicit Taxes/Subsidies
-    println("\n\n--- Implicit Taxes/Subsidies (\$/gallon) ---")
-    implicit_tax_table = make_implicit_tax_table(implicit_taxes, params;
-        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit])
-    show(implicit_tax_table, allrows=true)
-
-    # Production
-    println("\n\n--- Production ---")
-    prod_table = make_production_table(equivalent_solutions, params;
-        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit])
-    show(prod_table, allrows=true)
-
-    # Demand
-    println("\n\n--- Demand ---")
-    demand_table = make_demand_table(equivalent_solutions;
-        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit])
-    show(demand_table, allrows=true)
-
-    # Prices
-    println("\n\n--- Prices ---")
-    price_table = make_price_table(equivalent_solutions;
-        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit])
-    show(price_table, allrows=true)
-
-    # Land Use
-    println("\n\n--- Land Use (Million Acres) ---")
-    land_table = make_land_table(equivalent_solutions, params;
-        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit])
-    show(land_table, allrows=true)
-
-    # Emissions
-    println("\n\n--- Emissions (MMT CO2e) ---")
-    emissions_table = make_emissions_table(equivalent_solutions, params;
-        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit])
-    show(emissions_table, allrows=true)
-
-    # Duals
-    println("\n\n--- Dual Variables ---")
-    duals_table = make_duals_table(equivalent_solutions;
-        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit])
-    show(duals_table, allrows=true)
-
-    println("\n" * "="^130)
-end
 
 # =================================================================================
 # RUN ANALYSIS
@@ -585,13 +530,54 @@ println("="^130)
 @load "results_target.jld2" equivalent_policies equivalent_solutions target_saf policy_configs_target
 println("✓ Loaded target SAF results")
 
-display_equivalent_policy_results(
+display_comparison_tables(
     equivalent_solutions,
     params,
-    target_saf,
-    equivalent_policies
+    policy_configs_target;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+    title="EQUIVALENT POLICY COMPARISON (Target SAF = $(target_saf) billion gallons)",
+    show_policy_params=true,  # ⭐ Policy parameters 표시
+    equivalent_policies=equivalent_policies  # ⭐ Policy 데이터 전달
 )
 
 println("\n" * "="^130)
 println("ANALYSIS COMPLETE")
 println("="^130)
+
+
+# =================================================================================
+# SAVE RESULTS WITH IMPLICIT TAXES FOR WELFARE ANALYSIS
+# =================================================================================
+
+println("\n" * "="^80)
+println("SAVING RESULTS WITH IMPLICIT TAXES")
+println("="^80)
+
+# Base scenarios에 implicit tax 추가
+implicit_taxes_base = calculate_all_implicit_taxes(results_base, params, policy_configs_base)
+
+results_base_implicit_tax = Dict()
+for (scenario, solution) in results_base
+    results_base_implicit_tax[scenario] = merge(
+        solution,  # 기존 solution
+        (implicit_taxes=implicit_taxes_base[scenario],)  # implicit tax 추가
+    )
+end
+
+@save "results_base_implicit_tax.jld2" results_base_implicit_tax policy_configs_base
+println("✓ Saved results_base_implicit_tax.jld2")
+
+# Target scenarios에 implicit tax 추가
+implicit_taxes_target = calculate_all_implicit_taxes(equivalent_solutions, params, policy_configs_target)
+
+results_target_implicit_tax = Dict()
+for (scenario, solution) in equivalent_solutions
+    results_target_implicit_tax[scenario] = merge(
+        solution,
+        (implicit_taxes=implicit_taxes_target[scenario],)
+    )
+end
+@save "results_target_implicit_tax.jld2" results_target_implicit_tax policy_configs_target equivalent_policies target_saf
+
+println("✓ Saved results_target_implicit_tax.jld2")
+println("\n" * "="^80)

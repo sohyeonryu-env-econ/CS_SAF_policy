@@ -14,25 +14,24 @@ println("Working directory: ", pwd())
 # =================================================================================
 
 # Define policy stringency
-const POLICY_MATRIX = (
-    #             t     θ_avi  σ    p
-    statusquo=(0.0, 0.0, 0.0, 0.0),
-    carbontax=(250.0, 0.0, 0.0, 0.0),
-    rfs=(0.0, 0.3, 0.0, 0.0),
-    lcfs=(0.0, 0.0, 0.03, 0.0),
-    taxcredit=(0.0, 0.0, 0.0, 10.0)
+policy_configs_base = (
+    statusquo=(t=0.0, θ_avi=0.0, σ=0.0, p=0.0),
+    carbontax=(t=250.0, θ_avi=0.0, σ=0.0, p=0.0),
+    rfs=(t=0.0, θ_avi=0.3, σ=0.0, p=0.0),
+    lcfs=(t=0.0, θ_avi=0.0, σ=0.03, p=0.0),
+    taxcredit=(t=0.0, θ_avi=0.0, σ=0.0, p=10.0)
 )
 
 results_base = Dict()
 
 for scenario in [:statusquo, :carbontax, :rfs, :lcfs, :taxcredit]
-    println("\n====== Running: $scenario ======")
-    model = run_scenario(scenario, params, POLICY_MATRIX)
+    println("\n====== Running Base: $scenario ======")
+    model = run_scenario(scenario, params, policy_configs_base)  # ⭐ 직접 전달
     results_base[scenario] = extract_solution(model, scenario)
 end
 
 # ========== 결과 저장 ==========
-@save "results_base.jld2" results_base
+@save "results_base.jld2" results_base policy_configs_base
 println("\n✓ Base results saved to results_base.jld2")
 
 # =================================================================================
@@ -137,8 +136,15 @@ equivalent_solutions = Dict(
     :taxcredit => extract_solution(equivalent_policies[:taxcredit].model, :taxcredit)
 )
 
+policy_configs_target = (
+    carbontax=equivalent_policies[:carbontax].config,
+    rfs=equivalent_policies[:rfs].config,
+    lcfs=equivalent_policies[:lcfs].config,
+    taxcredit=equivalent_policies[:taxcredit].config
+)
+
 # 결과 저장
-@save "results_target_saf.jld2" equivalent_policies equivalent_solutions target_saf
+@save "results_target.jld2" equivalent_policies equivalent_solutions target_saf policy_configs_target
 println("\n✓ Target SAF results saved to results_target_saf.jld2")
 
 # =================================================================================

@@ -1,3 +1,40 @@
+# welfare.jl
+using JLD2
+using DataFrames
+using Printf
+
+# SAFModel에서 params 불러오기 (coefficients 필요)
+include(joinpath(@__DIR__, "SAFModel.jl"))
+using .SAFModel
+
+cd(@__DIR__)  # 작업 디렉토리 설정
+
+# =================================================================================
+# LOAD RESULTS WITH IMPLICIT TAXES
+# =================================================================================
+
+println("\n" * "="^80)
+println("WELFARE ANALYSIS")
+println("="^80)
+
+# Base scenarios 불러오기
+@load "results_base_implicit_tax.jld2" results_base_implicit_tax policy_configs_base
+println("✓ Loaded base results with implicit taxes")
+
+# Target scenarios 불러오기
+@load "results_target_implicit_tax.jld2" results_target_implicit_tax policy_configs_target equivalent_policies target_saf
+println("✓ Loaded target results with implicit taxes")
+
+# Base: Status quo
+status_quo = results_base_implicit_tax[:statusquo]
+println("✓ Extracted status quo as baseline")
+sq_x = status_quo.x          # 소비
+sq_q = status_quo.q          # 생산
+sq_p_c = status_quo.p_c      # 소비재 가격
+sq_p_f = status_quo.p_f      # 원료 가격
+sq_l_n = status_quo.l_n      # 일반 토지
+sq_l_cs = status_quo.l_cs    # CS 토지
+
 
 # =====================
 # Welfare Analysis Functions
@@ -6,9 +43,7 @@
 # Consumer Surplus Change Calculations
 clean_small(val, threshold=1e-10) = abs(val) < threshold ? 0.0 : val
 
-"""
-Calculate consumer surplus change for a single good
-"""
+# Calculate consumer surplus change for a single good
 function calc_cs_change(A, k, x_policy, x_sq, p_policy, p_sq)
     return (A / (k + 1)) * (x_policy^(k + 1) - x_sq^(k + 1)) - p_policy * x_policy + p_sq * x_sq
 end
@@ -125,23 +160,37 @@ function display_cs_changes(cs_changes_all; scenarios=nothing, title="CONSUMER S
     println("\n" * "="^130)
 end
 
-# Base analysis에서 status quo 저장
-solution_sq = solutions[:statusquo]
+# =================================================================================
+# RUN CONSUMER SURPLUS ANALYSIS
+# =================================================================================
 
-# Base analysis
-solution_sq = solutions[:statusquo]
-cs_changes_base = calculate_cs_changes(solutions, solution_sq, params; scenarios=SCENARIOS)
-display_cs_changes(cs_changes_base; scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="CONSUMER SURPLUS CHANGES FOR BASE POLICIES (billion \$)")
+# Base scenarios
+cs_changes_base = calculate_cs_changes(
+    results_base_implicit_tax,
+    status_quo,
+    params;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+)
 
-# Equivalent policies
-cs_changes_equiv = calculate_cs_changes(equivalent_solutions, solution_sq, params)
-display_cs_changes(cs_changes_equiv; scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="CONSUMER SURPLUS CHANGES FOR EQUIVALENT POLICIES (billion \$)")
+display_cs_changes(
+    cs_changes_base;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+    title="BASE SCENARIOS: CONSUMER SURPLUS CHANGES (vs Status Quo, billion \$)"
+)
 
-# Extended grid
-#cs_changes_grid = calculate_cs_changes(all_solutions, solution_sq, params)
+# Target scenarios
+cs_changes_target = calculate_cs_changes(
+    results_target_implicit_tax,
+    status_quo,
+    params;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+)
 
+display_cs_changes(
+    cs_changes_target;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+    title="TARGET SCENARIOS: CONSUMER SURPLUS CHANGES (Target SAF = $(target_saf) billion gallons, billion \$)"
+)
 
 
 
@@ -150,228 +199,295 @@ display_cs_changes(cs_changes_equiv; scenarios=[:carbontax, :rfs, :lcfs, :taxcre
 # =================================================================================
 
 """
-Calculate price per unit for a fuel (helper function)
+Calculate scarcity rents from binding common constraints
 """
-function get_fuel_price_per_unit(fuel::Symbol, solution, params)
+function calc_scarcity_rents(fuel, result, params)
+    duals = result.duals
+    scarcity_rent = 0.0
+
+    theta = 0.125  # RFS D6 mandate share
+
+    # =========================================================================
+    # 1. Road RFS D6
+    # =========================================================================
+    if fuel == :gasoline || fuel == :diesel
+        scarcity_rent += duals.λ_rfs * theta
+    elseif fuel == :ethanol
+        scarcity_rent += duals.λ_rfs * (-1.0)
+    elseif fuel == :biodiesel_soy || fuel == :biodiesel_nonsoy
+        scarcity_rent += duals.λ_rfs * (-1.5)
+    elseif fuel == :rd_soy || fuel == :rd_nonsoy
+        scarcity_rent += duals.λ_rfs * (-1.7)
+    end
+
+    # =========================================================================
+    # 2. Blend Wall - Ethanol
+    # =========================================================================
+    if fuel == :gasoline
+        scarcity_rent += duals.λ_blendwall_ethanol * (-0.1)
+    elseif fuel == :ethanol
+        scarcity_rent += duals.λ_blendwall_ethanol * 0.9
+    end
+
+    # =========================================================================
+    # 3. Blend Wall - Biodiesel
+    # =========================================================================
+    if fuel == :diesel
+        scarcity_rent += duals.λ_blendwall_biodiesel * (-0.05)
+    elseif fuel == :biodiesel_soy || fuel == :biodiesel_nonsoy
+        scarcity_rent += duals.λ_blendwall_biodiesel * 0.95
+    end
+
+    # =========================================================================
+    # 4. Non-soy Capacity
+    # =========================================================================
+    if fuel in [:saf_hefa_nonsoy, :biodiesel_nonsoy, :rd_nonsoy]
+        alpha = params.coeff.alpha
+
+        if fuel == :saf_hefa_nonsoy
+            scarcity_rent += duals.λ_nonsoy_capacity * alpha[:saf_hefa_nonsoy]
+        elseif fuel == :biodiesel_nonsoy
+            scarcity_rent += duals.λ_nonsoy_capacity * alpha[:biodiesel_nonsoy]
+        elseif fuel == :rd_nonsoy
+            scarcity_rent += duals.λ_nonsoy_capacity * alpha[:rd_nonsoy]
+        end
+    end
+
+    return scarcity_rent
+end
+
+"""
+Calculate producer net price (should equal c0)
+"""
+function calc_producer_net_price(fuel, result, params)
     r = params.coeff.r
     beta = params.coeff.beta
-    p_c = solution.p_c
 
-    if fuel == :jet_fuel
-        return r[:jet_fuel] * p_c[:avi]
+    # Energy-adjusted consumer price
+    price_per_unit = if fuel == :jet_fuel
+        r[:jet_fuel] * result.p_c[:avi]
     elseif fuel in [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
-        return r[:jet_fuel] * beta[(:saf, :jet_fuel)] * p_c[:avi]
+        r[:jet_fuel] * beta[(:saf, :jet_fuel)] * result.p_c[:avi]
     elseif fuel == :gasoline
-        return r[:gasoline] * p_c[:gas]
+        r[:gasoline] * result.p_c[:gas]
     elseif fuel == :ethanol
-        return r[:gasoline] * beta[(:ethanol, :gasoline)] * p_c[:gas]
+        r[:gasoline] * beta[(:ethanol, :gasoline)] * result.p_c[:gas]
     elseif fuel == :diesel
-        return r[:diesel] * p_c[:die]
+        r[:diesel] * result.p_c[:die]
     elseif fuel in [:biodiesel_soy, :biodiesel_nonsoy]
-        return r[:diesel] * beta[(:biodiesel, :diesel)] * p_c[:die]
+        r[:diesel] * beta[(:biodiesel, :diesel)] * result.p_c[:die]
     elseif fuel in [:rd_soy, :rd_nonsoy]
-        return r[:diesel] * beta[(:rd, :diesel)] * p_c[:die]
+        r[:diesel] * beta[(:rd, :diesel)] * result.p_c[:die]
     else
-        return 0.0
+        0.0
     end
-end
 
-"""
-Calculate land producer surplus change
-"""
-function calc_land_ps_change(L_policy, r_policy, L_sq, r_sq, land_supply)
-    r0_land = land_supply.r0_land
-    ϵ_land = land_supply.ϵ_land
-    L0 = land_supply.L0
+    # Policy-specific implicit tax
+    implicit_taxes = get(result, :implicit_taxes, Dict())
+    implicit_tax = get(get(implicit_taxes, fuel, Dict()), :total, 0.0)
 
-    # Revenue change
-    revenue_change = r_policy * L_policy - r_sq * L_sq
+    # Common constraint scarcity rents
+    scarcity_rent = calc_scarcity_rents(fuel, result, params)
 
-    # Cost change (integral of marginal cost)
-    exponent = (1 + ϵ_land) / ϵ_land
-    cost_change = (r0_land * ϵ_land) / (L0^(1 / ϵ_land) * (1 + ϵ_land)) *
-                  (L_policy^exponent - L_sq^exponent)
+    # Non-soy feedstock cost (exogenous price)
+    feedstock_cost = 0.0
+    if fuel in [:saf_hefa_nonsoy, :biodiesel_nonsoy, :rd_nonsoy]
+        alpha = params.coeff.alpha
+        nonsoy_feedstock_price = 0.48  # $/lb (exogenous)
 
-    return revenue_change - cost_change
-end
-
-"""
-Calculate fossil fuel producer surplus change for a single fuel
-"""
-function calc_fuel_ps_change(Q_policy, P_policy, adj_policy,
-    Q_sq, P_sq, adj_sq,
-    fuel_params)
-    c0 = fuel_params.c0
-    c1 = fuel_params.c1
-    c2 = fuel_params.c2
-    v = fuel_params.v
-
-    # Producer surplus = (P - adjustment) * Q - Total Variable Cost
-    function calc_ps(Q, P, adj)
-        net_price = P - adj
-        revenue = net_price * Q
-
-        # Total Variable Cost: integral of MC
-        tvc = c0 * Q + 0.5 * c1 * Q^2
-        if Q > v
-            tvc += (c2 / 3) * (Q - v)^3
+        if fuel == :saf_hefa_nonsoy
+            feedstock_cost = alpha[:saf_hefa_nonsoy] * nonsoy_feedstock_price
+        elseif fuel == :biodiesel_nonsoy
+            feedstock_cost = alpha[:biodiesel_nonsoy] * nonsoy_feedstock_price
+        elseif fuel == :rd_nonsoy
+            feedstock_cost = alpha[:rd_nonsoy] * nonsoy_feedstock_price
         end
-
-        return revenue - tvc
     end
 
-    ps_policy = calc_ps(Q_policy, P_policy, adj_policy)
-    ps_sq = calc_ps(Q_sq, P_sq, adj_sq)
+    # ⭐ HEFA SAF premium (only for SAF HEFA)
+    hefa_saf_premium = 0.0
+    if fuel == :saf_hefa_nonsoy
+        hefa_saf_premium = 0.08  # $/gallon (correct value!)
+    end
 
-    return ps_policy - ps_sq
+    # Producer net price (should equal c0)
+    return price_per_unit - implicit_tax - scarcity_rent - feedstock_cost - hefa_saf_premium
 end
 
 """
-Calculate producer surplus changes for all scenarios
+Calculate producer surplus for a single fuel
 """
-function calculate_ps_changes(solutions, solution_sq, params, all_implicit_taxes;
-    scenarios=nothing)
+function calc_fuel_ps(p_net, q, c0, c1, c2, v)
+    revenue = p_net * q
+    cost = c0 * q + (c1 / 2) * q^2
+    if q > v
+        cost += (c2 / 3) * (q - v)^3
+    end
+    return revenue - cost
+end
+
+"""
+Calculate non-agricultural producer surplus changes
+"""
+function calculate_ps_nonag_changes(solutions, solution_sq, params; scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(solutions)) : scenarios
     scenario_list = filter(s -> s != :statusquo, scenario_list)
 
-    land_supply = params.supply.land
-    fuel_costs = params.supply.fuel
+    supply = params.supply.fuel
 
-    # Status quo values
-    L_sq = solution_sq.l_n + solution_sq.l_cs
-    r_sq = solution_sq.duals.r_land
+    nonag_fuels = Dict(
+        :jet_fuel => :jet_fuel,
+        :gasoline => :gasoline,
+        :diesel => :diesel,
+        :saf_hefa_nonsoy => :saf_hefa_shared,
+        :biodiesel_nonsoy => :biodiesel_nonsoy,
+        :rd_nonsoy => :saf_hefa_shared
+    )
 
-    ps_changes_all = Dict()
+    # Status quo PS
+    ps_sq_by_fuel = Dict()
+    for (fuel, cost_key) in nonag_fuels
+        fc = supply[cost_key]
+        p_net_sq = calc_producer_net_price(fuel, solution_sq, params)
+        q_sq = solution_sq.q[fuel]
+        ps_sq = calc_fuel_ps(p_net_sq, q_sq, fc.c0, fc.c1, fc.c2, fc.v)
+        scarcity_rent_sq = calc_scarcity_rents(fuel, solution_sq, params)
 
-    for scenario in scenario_list
-        sol = solutions[scenario]
-        L_policy = sol.l_n + sol.l_cs
-        r_policy = sol.duals.r_land
-
-        # Get implicit taxes (only aviation fuels have non-zero values)
-        policy_taxes = all_implicit_taxes[scenario]
-
-        # 1. Land Producer Surplus Change
-        ps_land = calc_land_ps_change(L_policy, r_policy, L_sq, r_sq, land_supply)
-
-        # 2. Fuel Producer Surplus Changes
-        target_fuels = [:jet_fuel, :gasoline, :diesel,
-            :saf_hefa_nonsoy, :biodiesel_nonsoy, :rd_nonsoy]
-
-        fuel_ps = Dict()
-        for f in target_fuels
-            # Map fuel to cost parameter key
-            f_key = (f in [:saf_hefa_nonsoy, :rd_nonsoy]) ? :saf_hefa_shared : f
-            f_params = fuel_costs[f_key]
-
-            # Get prices
-            P_policy = get_fuel_price_per_unit(f, sol, params)
-            P_sq = get_fuel_price_per_unit(f, solution_sq, params)
-
-            # Get adjustments
-            # Aviation fuels have implicit taxes, road fuels are 0
-            adj_sq = 0.0
-            adj_policy = haskey(policy_taxes, f) ? policy_taxes[f][:total] : 0.0
-
-            fuel_ps[f] = calc_fuel_ps_change(
-                sol.q[f], P_policy, adj_policy,
-                solution_sq.q[f], P_sq, adj_sq,
-                f_params
-            )
-        end
-
-        # Aggregate by category
-        ps_fossil_total = fuel_ps[:jet_fuel] + fuel_ps[:gasoline] + fuel_ps[:diesel]
-        ps_nonsoy_total = fuel_ps[:saf_hefa_nonsoy] +
-                          fuel_ps[:biodiesel_nonsoy] +
-                          fuel_ps[:rd_nonsoy]
-
-        ps_changes_all[scenario] = Dict(
-            :land => ps_land,
-            :jet_fuel => fuel_ps[:jet_fuel],
-            :gasoline => fuel_ps[:gasoline],
-            :diesel => fuel_ps[:diesel],
-            :nonsoy_saf => fuel_ps[:saf_hefa_nonsoy],
-            :nonsoy_bio => fuel_ps[:biodiesel_nonsoy] + fuel_ps[:rd_nonsoy],
-            :fossil_total => ps_fossil_total,
-            :nonsoy_total => ps_nonsoy_total,
-            :total => ps_land + ps_fossil_total + ps_nonsoy_total
+        ps_sq_by_fuel[fuel] = (
+            ps=ps_sq,
+            p_net=p_net_sq,
+            q=q_sq,
+            c0=fc.c0,
+            scarcity_rent=scarcity_rent_sq
         )
     end
 
-    return ps_changes_all
-end
-
-"""
-Create producer surplus change table
-"""
-function make_ps_change_table(ps_changes_all; scenarios=nothing)
-    scenario_list = isnothing(scenarios) ? collect(keys(ps_changes_all)) : scenarios
-    scenario_list = filter(s -> s != :statusquo, scenario_list)
-
-    df = DataFrame(Producer=String[])
+    # Policy PS changes
+    results = Dict()
     for scenario in scenario_list
-        df[!, String(scenario)] = Float64[]
-    end
+        sol_policy = solutions[scenario]
+        ps_by_fuel = Dict()
 
-    producers = [
-        (:land, "Land Owners (Ag-based)"),
-        (:jet_fuel, "Jet Fuel Producers"),
-        (:gasoline, "Gasoline Producers"),
-        (:diesel, "Diesel Producers"),
-        (:nonsoy_saf, "Non-soy HEFA SAF Producers"),
-        (:nonsoy_bio, "Non-soy Bio/RD Producers"),
-        (:fossil_total, "Fossil Fuel Total"),
-        (:nonsoy_total, "Non-soy Biofuel Total"),
-        (:total, "TOTAL PS CHANGE")
-    ]
+        for (fuel, cost_key) in nonag_fuels
+            fc = supply[cost_key]
 
-    for (prod_key, prod_label) in producers
-        push!(df.Producer, prod_label)
-        for scenario in scenario_list
-            value = clean_small(ps_changes_all[scenario][prod_key])
-            push!(df[!, String(scenario)], value)
+            p_net_policy = calc_producer_net_price(fuel, sol_policy, params)
+            q_policy = sol_policy.q[fuel]
+            ps_policy = calc_fuel_ps(p_net_policy, q_policy, fc.c0, fc.c1, fc.c2, fc.v)
+            scarcity_rent_policy = calc_scarcity_rents(fuel, sol_policy, params)
+
+            sq_data = ps_sq_by_fuel[fuel]
+            ps_change = ps_policy - sq_data.ps
+
+            ps_by_fuel[fuel] = (
+                ps_change=clean_small(ps_change),
+                ps_policy=ps_policy,
+                ps_sq=sq_data.ps,
+                p_net_policy=p_net_policy,
+                p_net_sq=sq_data.p_net,
+                q_policy=q_policy,
+                q_sq=sq_data.q,
+                c0=fc.c0,
+                scarcity_rent_policy=scarcity_rent_policy,
+                scarcity_rent_sq=sq_data.scarcity_rent
+            )
         end
+
+        total_ps_change = sum(data.ps_change for data in values(ps_by_fuel))
+
+        results[scenario] = (
+            by_fuel=ps_by_fuel,
+            total=clean_small(total_ps_change)
+        )
     end
 
-    return df
+    return results, ps_sq_by_fuel
 end
 
 """
-Display producer surplus changes
+Display non-ag PS changes
 """
-function display_ps_changes(ps_changes_all; scenarios=nothing,
-    title="PRODUCER SURPLUS CHANGES (billion \$)")
+function display_ps_nonag_changes(ps_nonag_all, ps_sq_by_fuel; scenarios=nothing,
+    title="NON-AG PRODUCER SURPLUS CHANGES (billion \$)")
+    scenario_list = isnothing(scenarios) ? collect(keys(ps_nonag_all)) : scenarios
+
     println("\n" * "="^130)
     println(title)
     println("="^130)
 
-    ps_table = make_ps_change_table(ps_changes_all; scenarios=scenarios)
-    show(ps_table, allrows=true)
+    # Summary table
+    df = DataFrame(Scenario=Symbol[], JetFuel=Float64[], Gasoline=Float64[],
+        Diesel=Float64[], NonSoyHEFA=Float64[], NonSoyBD=Float64[],
+        NonSoyRD=Float64[], Total=Float64[])
+
+    for scenario in scenario_list
+        ps = ps_nonag_all[scenario].by_fuel
+        push!(df, (
+            scenario,
+            ps[:jet_fuel].ps_change,
+            ps[:gasoline].ps_change,
+            ps[:diesel].ps_change,
+            ps[:saf_hefa_nonsoy].ps_change,
+            ps[:biodiesel_nonsoy].ps_change,
+            ps[:rd_nonsoy].ps_change,
+            ps_nonag_all[scenario].total
+        ))
+    end
+
+    show(df, allrows=true)
+
+    # Verification
+    println("\n\n--- STATUS QUO VERIFICATION: p_net should equal c0 ---")
+    @printf("%-20s %12s %12s %12s %12s\n", "Fuel", "p_net_sq", "c0", "Diff", "PS_sq")
+    println("-"^68)
+
+    for fuel in [:jet_fuel, :gasoline, :diesel, :saf_hefa_nonsoy, :biodiesel_nonsoy, :rd_nonsoy]
+        sq = ps_sq_by_fuel[fuel]
+        diff = sq.p_net - sq.c0
+        check = abs(diff) < 1e-6 ? "✓" : "✗"
+        @printf("%-20s %12.4f %12.4f %12.2e %12.2f %s\n",
+            fuel, sq.p_net, sq.c0, diff, sq.ps, check)
+    end
 
     println("\n" * "="^130)
 end
 
-# Calculate implicit taxes for all scenarios (including statusquo)
-all_implicit_taxes = calculate_all_implicit_taxes(solutions, params, POLICY_MATRIX)
+# Base
+ps_nonag_base, ps_sq_by_fuel = calculate_ps_nonag_changes(
+    results_base_implicit_tax,
+    status_quo,
+    params;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+)
 
-# Producer Surplus Analysis
-solution_sq = solutions[:statusquo]
-ps_changes_base = calculate_ps_changes(solutions, solution_sq, params,
-    all_implicit_taxes;
-    scenarios=SCENARIOS)
-display_ps_changes(ps_changes_base;
+display_ps_nonag_changes(
+    ps_nonag_base,
+    ps_sq_by_fuel;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="PRODUCER SURPLUS CHANGES FOR BASE POLICIES (billion \$)")
+    title="BASE SCENARIOS: NON-AG PRODUCER SURPLUS CHANGES"
+)
 
-# Equivalent policies
-equivalent_implicit_taxes = calculate_all_implicit_taxes(equivalent_solutions, params, POLICY_MATRIX)
-ps_changes_equiv = calculate_ps_changes(equivalent_solutions, solution_sq, params,
-    equivalent_implicit_taxes;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit])
-display_ps_changes(ps_changes_equiv;
+# Target
+ps_nonag_target, _ = calculate_ps_nonag_changes(
+    results_target_implicit_tax,
+    status_quo,
+    params;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+)
+
+display_ps_nonag_changes(
+    ps_nonag_target,
+    ps_sq_by_fuel;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="PRODUCER SURPLUS CHANGES FOR EQUIVALENT POLICIES (billion \$)")
+    title="TARGET SCENARIOS: NON-AG PRODUCER SURPLUS CHANGES"
+)
+
+println("\n" * "="^80)
+println("WELFARE ANALYSIS COMPLETE")
+println("="^80)
+
+
+# =================================================================================
 
 
 """
