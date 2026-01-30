@@ -434,6 +434,42 @@ function make_land_table(solutions, params; scenarios=nothing)
     return df
 end
 
+# Emissions
+function calculate_emissions_detail(solution, params)
+    """Calculate detailed emissions by sector"""
+    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
+        :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    ROAD_FUELS = [:gasoline, :ethanol, :diesel,
+        :biodiesel_soy, :biodiesel_nonsoy, :rd_soy, :rd_nonsoy]
+    FOOD_GOODS = [:corn, :soyoil]
+
+    delta = params.coeff.delta
+
+    # Sector emissions (billion ton CO2e)
+    avi_emission = sum(delta[g] * solution.q[g] for g in AVIATION_FUELS)
+    road_emission = sum(delta[g] * solution.q[g] for g in ROAD_FUELS)
+    food_emission = sum(delta[g] * solution.x[g] for g in FOOD_GOODS)
+    total_emission = avi_emission + road_emission + food_emission
+
+    # Detailed fuel-level emissions
+    fuel_emissions = Dict(
+        g => delta[g] * solution.q[g] for g in union(AVIATION_FUELS, ROAD_FUELS)
+    )
+
+    food_emissions = Dict(
+        g => delta[g] * solution.x[g] for g in FOOD_GOODS
+    )
+
+    return (
+        aviation=avi_emission,
+        road=road_emission,
+        food=food_emission,
+        total=total_emission,
+        by_fuel=fuel_emissions,
+        by_food=food_emissions
+    )
+end
+
 function make_emissions_table(solutions, params; scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(solutions)) : scenarios
 
@@ -553,31 +589,48 @@ println("\n" * "="^80)
 println("SAVING RESULTS WITH IMPLICIT TAXES")
 println("="^80)
 
-# Base scenarios에 implicit tax 추가
+# =====================
+# Base scenarios 분석 데이터 저장
+# =====================
 implicit_taxes_base = calculate_all_implicit_taxes(results_base, params, policy_configs_base)
 
-results_base_implicit_tax = Dict()
+results_base_analysis = Dict()
 for (scenario, solution) in results_base
-    results_base_implicit_tax[scenario] = merge(
+    emissions = calculate_emissions_detail(solution, params)
+
+    results_base_analysis[scenario] = merge(
         solution,  # 기존 solution
-        (implicit_taxes=implicit_taxes_base[scenario],)  # implicit tax 추가
+        (
+            implicit_taxes=implicit_taxes_base[scenario],
+            emissions=emissions
+            # 향후 추가될 수 있는 분석 데이터...
+        )
     )
 end
 
-@save "results_base_implicit_tax.jld2" results_base_implicit_tax policy_configs_base
-println("✓ Saved results_base_implicit_tax.jld2")
+@save "results_base_analysis.jld2" results_base_analysis policy_configs_base
+println("✓ Saved results_base_analysis.jld2 (with implicit taxes + emissions)")
 
-# Target scenarios에 implicit tax 추가
+# =====================
+# Target/Equivalent scenarios 분석 데이터 저장
+# =====================
 implicit_taxes_target = calculate_all_implicit_taxes(equivalent_solutions, params, policy_configs_target)
 
-results_target_implicit_tax = Dict()
+results_equivalent_analysis = Dict()
 for (scenario, solution) in equivalent_solutions
-    results_target_implicit_tax[scenario] = merge(
+    emissions = calculate_emissions_detail(solution, params)
+
+    results_equivalent_analysis[scenario] = merge(
         solution,
-        (implicit_taxes=implicit_taxes_target[scenario],)
+        (
+            implicit_taxes=implicit_taxes_target[scenario],
+            emissions=emissions
+            # 향후 추가될 수 있는 분석 데이터...
+        )
     )
 end
-@save "results_target_implicit_tax.jld2" results_target_implicit_tax policy_configs_target equivalent_policies target_saf
 
-println("✓ Saved results_target_implicit_tax.jld2")
+@save "results_equivalent_analysis.jld2" results_equivalent_analysis policy_configs_target equivalent_policies target_saf
+println("✓ Saved results_equivalent_analysis.jld2 (with implicit taxes + emissions)")
+
 println("\n" * "="^80)

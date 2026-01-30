@@ -68,7 +68,7 @@ const FOOD_GOODS = GOODS[18:19]  # all food goods
 # parameters
 # =====================
 
-# delta: Carbon Intensity (kg CO2e per MJ) all fuel and food goods
+# delta: Carbon Intensity (ton CO2e per gallon) all fuel and food goods
 δ_vec = [
     0.01155398, 0.006545966, 0.005282266, 0.004869036, 0.004237186, 0.002486962,
     0.012051015, 0.003570138, 0.013507512, 0.002547826, 0.002680263,
