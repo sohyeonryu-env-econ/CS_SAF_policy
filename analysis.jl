@@ -1,6 +1,7 @@
 # analysis.jl
 include(joinpath(@__DIR__, "SAFModel.jl"))
 using .SAFModel
+import .SAFModel: params, calculate_all_implicit_taxes, display_comparison_tables, calculate_emissions_detail, FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
 using JLD2
 using DataFrames
 using Printf
@@ -544,7 +545,7 @@ end
 
 # PART 1: BASE SCENARIOS
 println("\n" * "="^130)
-println("LOADING BASE SCENARIOS")
+println("LOADING BASE AND STATUS QUO SCENARIOS")
 println("="^130)
 
 @load "results_base.jld2" results_base policy_configs_base
@@ -614,7 +615,7 @@ println("✓ Saved results_base_analysis.jld2 (with implicit taxes + emissions)"
 # =====================
 # Target/Equivalent scenarios 분석 데이터 저장
 # =====================
-implicit_taxes_target = calculate_all_implicit_taxes(equivalent_solutions, params, policy_configs_target)
+implicit_taxes_equivalent = calculate_all_implicit_taxes(equivalent_solutions, params, policy_configs_target)
 
 results_equivalent_analysis = Dict()
 for (scenario, solution) in equivalent_solutions
@@ -623,7 +624,7 @@ for (scenario, solution) in equivalent_solutions
     results_equivalent_analysis[scenario] = merge(
         solution,
         (
-            implicit_taxes=implicit_taxes_target[scenario],
+            implicit_taxes=implicit_taxes_equivalent[scenario],
             emissions=emissions
             # 향후 추가될 수 있는 분석 데이터...
         )
