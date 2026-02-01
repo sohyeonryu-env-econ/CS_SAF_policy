@@ -1,3 +1,16 @@
+include(joinpath(@__DIR__, "SAFModel.jl"))
+include(joinpath(@__DIR__, "analysis.jl"))  # ⭐ implicit tax 함수들
+include(joinpath(@__DIR__, "welfare.jl"))   # ⭐ welfare 함수들
+import .SAFModel: params, build_unified_model, extract_solution,
+    FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
+using JLD2
+using DataFrames
+using Printf
+using Plots
+
+cd(@__DIR__)
+println("Working directory: ", pwd())
+
 # =================================================================================
 # 5. Extended Policy Parameter Grid
 # =================================================================================
@@ -381,3 +394,8 @@ diesel_plot = plot_fuel_production(results_df, diesel_config)
 #display(diesel_plot)
 
 #println("\nFigures saved!")
+
+
+# 결과 저장
+@save "extended_policy_results.jld2" all_results all_solutions results_df
+println("\n✓ Extended policy results saved to extended_policy_results.jld2")
