@@ -167,7 +167,7 @@ end
 
 # Base scenarios
 cs_changes_base = calculate_cs_changes(
-    results_base_implicit_tax,
+    results_base_analysis,
     status_quo,
     params;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
@@ -180,17 +180,17 @@ display_cs_changes(
 )
 
 # Target scenarios
-cs_changes_target = calculate_cs_changes(
-    results_target_implicit_tax,
+cs_changes_equivalent = calculate_cs_changes(
+    results_equivalent_analysis,
     status_quo,
     params;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
 )
 
 display_cs_changes(
-    cs_changes_target;
+    cs_changes_equivalent;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="TARGET SCENARIOS: CONSUMER SURPLUS CHANGES (Target SAF = $(target_saf) billion gallons, billion \$)"
+    title="EQUIVALENT SCENARIOS: CONSUMER SURPLUS CHANGES (Target SAF = $(target_saf) billion gallons, billion \$)"
 )
 
 
@@ -418,7 +418,7 @@ function display_gr_changes(gr_changes; scenarios=nothing, title="GOVERNMENT REV
 end
 # Base scenarios
 gr_changes_base = calculate_gr_changes(
-    results_base_implicit_tax;
+    results_base_analysis;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
 )
 
@@ -428,16 +428,16 @@ display_gr_changes(
     title="BASE SCENARIOS: GOVERNMENT REVENUE CHANGES"
 )
 
-# Target scenarios
-gr_changes_target = calculate_gr_changes(
-    results_target_implicit_tax;
+# Equivalent scenarios
+gr_changes_equivalent = calculate_gr_changes(
+    results_equivalent_analysis;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
 )
 
 display_gr_changes(
-    gr_changes_target;
+    gr_changes_equivalent;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],  # ⭐ 순서 지정
-    title="TARGET SCENARIOS: GOVERNMENT REVENUE CHANGES"
+    title="EQUIVALENT SCENARIOS: GOVERNMENT REVENUE CHANGES"
 )
 
 # =================================================================================
@@ -709,9 +709,9 @@ display_welfare_summary(
 
 # Equivalent/Target scenarios
 welfare_summary_equivalent = calculate_total_welfare(
-    cs_changes_target,
+    cs_changes_equivalent,
     ps_land_equivalent,  # ⭐ 수정
-    gr_changes_target,
+    gr_changes_equivalent,
     env_benefits_equivalent;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
 )
@@ -726,7 +726,28 @@ println("\n" * "="^80)
 println("TOTAL WELFARE ANALYSIS COMPLETE")
 println("="^80)
 
+# =================================================================================
+# SAVE COMPLETE RESULTS WITH ALL WELFARE ANALYSIS
+# =================================================================================
 
+println("\n" * "="^80)
+println("SAVING COMPLETE BASE ANALYSIS RESULTS")
+println("="^80)
+
+# Status quo (완전한 버전 - emissions 포함)
+status_quo = results_base_analysis[:statusquo]
+
+# Save complete base analysis
+@save "results_base_complete.jld2" results_base_analysis policy_configs_base status_quo cs_changes_base ps_land_base gr_changes_base env_benefits_base
+println("✓ Complete base analysis saved to results_base_complete.jld2")
+
+# Save complete target/equivalent analysis
+@save "results_target_complete.jld2" results_equivalent_analysis policy_configs_target status_quo cs_changes_equivalent ps_land_equivalent gr_changes_equivalent env_benefits_equivalent target_saf
+println("✓ Complete target analysis saved to results_target_complete.jld2")
+
+println("\n" * "="^80)
+println("ALL RESULTS SAVED - READY FOR EXTENDED GRID ANALYSIS")
+println("="^80)
 
 
 """

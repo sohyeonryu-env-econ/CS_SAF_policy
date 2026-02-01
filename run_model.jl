@@ -1,6 +1,7 @@
 # run_model.jl
 include(joinpath(@__DIR__, "SAFModel.jl"))
 using .SAFModel
+import .SAFModel: params, run_scenario, extract_solution, is_solved_and_feasible
 import Pkg;
 Pkg.add("JLD2");
 using JLD2
