@@ -1,20 +1,21 @@
 # run_model.jl
-include(joinpath(@__DIR__, "SAFModel.jl"))
-using .SAFModel
-import .SAFModel: params, run_scenario, extract_solution, is_solved_and_feasible
-import Pkg;
-Pkg.add("JLD2");
-using JLD2
-using JuMP
-
-cd(@__DIR__)
+include(joinpath(@__DIR__, "SAFModel.jl")) # load SAFModel.jl from the same directory
+cd(@__DIR__)                               # Set working directory to the script's directory
 println("Working directory: ", pwd())
 
+using .SAFModel;
+import .SAFModel: params, run_scenario, extract_solution, is_solved_and_feasible;
+import Pkg;
+Pkg.add("JLD2");
+using JLD2;
+using JuMP;
+
+
 # =================================================================================
-# 1. Run Base Scenarios
+# 1. Run Base Scenarios (status quo + example policies)
 # =================================================================================
 
-# Define policy stringency
+# Define policy stringency configuration
 policy_configs_base = (
     statusquo=(t=0.0, θ_avi=0.0, σ=0.0, p=0.0),
     carbontax=(t=250.0, θ_avi=0.0, σ=0.0, p=0.0),
@@ -25,23 +26,20 @@ policy_configs_base = (
 
 results_base = Dict()
 
+# run
 for scenario in [:statusquo, :carbontax, :rfs, :lcfs, :taxcredit]
     println("\n====== Running Base: $scenario ======")
-    model = run_scenario(scenario, params, policy_configs_base)  # ⭐ 직접 전달
+    model = run_scenario(scenario, params, policy_configs_base)
     results_base[scenario] = extract_solution(model, scenario)
 end
 
-# ========== 결과 저장 ==========
+# save results
 @save "results_base.jld2" results_base policy_configs_base
 println("\n✓ Base results saved to results_base.jld2")
 
 # =================================================================================
-# 2. Target SAF Analysis (3 billion gallons)
+# 2. Equivalent SAF Analysis (target = 3 billion gallons of total SAF)
 # =================================================================================
-
-println("\n" * "="^80)
-println("PART 2: TARGET SAF ANALYSIS")
-println("="^80)
 
 # Find policy stringency function
 function find_policy_for_target_saf(target_saf, params, policy_type; tolerance=0.001)
@@ -131,30 +129,16 @@ end
 
 # Extract solutions
 equivalent_solutions = Dict(
-    :carbontax => extract_solution(equivalent_policies[:carbontax].model, :carbontax),
-    :rfs => extract_solution(equivalent_policies[:rfs].model, :rfs),
-    :lcfs => extract_solution(equivalent_policies[:lcfs].model, :lcfs),
-    :taxcredit => extract_solution(equivalent_policies[:taxcredit].model, :taxcredit)
+    policy_type => extract_solution(result.model, policy_type)
+    for (policy_type, result) in equivalent_policies
 )
 
-policy_configs_target = (
-    carbontax=equivalent_policies[:carbontax].config,
-    rfs=equivalent_policies[:rfs].config,
-    lcfs=equivalent_policies[:lcfs].config,
-    taxcredit=equivalent_policies[:taxcredit].config
+# Extract policy stringencies that make target SAF
+policy_configs_target = NamedTuple(
+    policy_type => result.config
+    for (policy_type, result) in equivalent_policies
 )
 
-# 결과 저장
+# save
 @save "results_target.jld2" equivalent_policies equivalent_solutions target_saf policy_configs_target
 println("\n✓ Target SAF results saved to results_target_saf.jld2")
-
-# =================================================================================
-# Summary
-# =================================================================================
-
-println("\n" * "="^80)
-println("ANALYSIS COMPLETE!")
-println("="^80)
-println("Saved files:")
-println("  1. results_base.jld2 - Base scenario results")
-println("  2. results_target_saf.jld2 - Target SAF analysis results")

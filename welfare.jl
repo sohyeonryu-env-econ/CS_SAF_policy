@@ -1,57 +1,48 @@
 # welfare.jl
+cd(@__DIR__)
+include(joinpath(@__DIR__, "SAFModel.jl"))
 using JLD2
 using DataFrames
 using Printf
-
-# SAFModel에서 params 불러오기 (coefficients 필요)
-include(joinpath(@__DIR__, "SAFModel.jl"))
 using .SAFModel
 
-cd(@__DIR__)  # 작업 디렉토리 설정
-
 # =================================================================================
-# LOAD RESULTS WITH IMPLICIT TAXES
+# 1. Load results
 # =================================================================================
 
-println("\n" * "="^80)
-println("WELFARE ANALYSIS")
-println("="^80)
-
-# Base scenarios 불러오기
+# Base scenarios
 @load "results_base_analysis.jld2" results_base_analysis policy_configs_base
-println("✓ Loaded base analysis results")
 
-# Target/Equivalent scenarios 불러오기
+# Target/Equivalent scenarios
 @load "results_equivalent_analysis.jld2" results_equivalent_analysis policy_configs_target equivalent_policies target_saf
-println("✓ Loaded equivalent analysis results")
 
-# Base: Status quo
+# Save separately: Status quo
 status_quo = results_base_analysis[:statusquo]
-println("✓ Extracted status quo as baseline")
 
-sq_x = status_quo.x          # 소비
-sq_q = status_quo.q          # 생산
-sq_p_c = status_quo.p_c      # 소비재 가격
-sq_p_f = status_quo.p_f      # 원료 가격
-sq_l_n = status_quo.l_n      # 일반 토지
-sq_l_cs = status_quo.l_cs    # CS 토지
+sq_x = status_quo.x          # consumption
+sq_q = status_quo.q          # production
+sq_p_c = status_quo.p_c      # consumer prices
+sq_p_f = status_quo.p_f      # feedstock prices
+sq_l_n = status_quo.l_n      # conventional land
+sq_l_cs = status_quo.l_cs    # CS land
 
 
-# =====================
-# Welfare Analysis Functions
-# =====================
+# =================================================================================
+# 2. Welfare Analysis Functions
+# =================================================================================
 
-# Consumer Surplus Change Calculations
+# Clean small values
 clean_small(val, threshold=1e-10) = abs(val) < threshold ? 0.0 : val
 
+# =====================
+# 1) Consumer Surplus Change
+# =====================
 # Calculate consumer surplus change for a single good
 function calc_cs_change(A, k, x_policy, x_sq, p_policy, p_sq)
     return (A / (k + 1)) * (x_policy^(k + 1) - x_sq^(k + 1)) - p_policy * x_policy + p_sq * x_sq
 end
 
-"""
-Calculate consumer surplus changes for all goods
-"""
+# CS change calculate for all goods and scenarios
 function calculate_cs_changes(solutions, solution_sq, params; scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(solutions)) : scenarios
     # Remove statusquo from scenario list if present
@@ -102,7 +93,7 @@ function calculate_cs_changes(solutions, solution_sq, params; scenarios=nothing)
                 demand[:soymeal].A, demand[:soymeal].k,
                 x_policy[:soymeal], x_sq[:soymeal],
                 p_policy_c[:soymeal], p_sq_c[:soymeal]
-            ) / 1000 # Convert to billion dollars
+            ) / 1000 # Convert to billion dollars (soymeal is in million metric ton)
         )
 
         cs_changes[:total] = sum(v for (k, v) in cs_changes if k != :total)
@@ -112,13 +103,9 @@ function calculate_cs_changes(solutions, solution_sq, params; scenarios=nothing)
     return cs_changes_all
 end
 
-"""
-Create consumer surplus change table
-"""
+# Create consumer surplus change table
 function make_cs_change_table(cs_changes_all; scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(cs_changes_all)) : scenarios
-    # Remove statusquo if present
-    scenario_list = filter(s -> s != :statusquo, scenario_list)
 
     df = DataFrame(Good=String[])
     for scenario in scenario_list
@@ -138,7 +125,6 @@ function make_cs_change_table(cs_changes_all; scenarios=nothing)
     for (good_key, good_label) in goods
         push!(df.Good, good_label)
         for scenario in scenario_list
-            # Clean small values
             value = clean_small(cs_changes_all[scenario][good_key])
             push!(df[!, String(scenario)], value)
         end
@@ -147,9 +133,7 @@ function make_cs_change_table(cs_changes_all; scenarios=nothing)
     return df
 end
 
-"""
-Display consumer surplus changes
-"""
+# Display
 function display_cs_changes(cs_changes_all; scenarios=nothing, title="CONSUMER SURPLUS CHANGES (billion \$)")
     println("\n" * "="^130)
     println(title)
@@ -161,9 +145,7 @@ function display_cs_changes(cs_changes_all; scenarios=nothing, title="CONSUMER S
     println("\n" * "="^130)
 end
 
-# =================================================================================
-# RUN CONSUMER SURPLUS ANALYSIS
-# =================================================================================
+# Run consumer surplus analysis
 
 # Base scenarios
 cs_changes_base = calculate_cs_changes(
@@ -194,21 +176,17 @@ display_cs_changes(
 )
 
 
-
-# =================================================================================
-# Producer Surplus Changes
-# =================================================================================
-
-# =================================================================================
-# LAND PRODUCER SURPLUS CHANGES
-# =================================================================================
-
+# =====================
+# 2. LAND PRODUCER SURPLUS CHANGES
+# =====================
+# Fossil fuel producer surplus is always zero in this model (perfectly elastic supply at fixed price)
 """
 Calculate land producer surplus changes
 Land supply: L = L0 * (r/r0)^ε
 Inverse supply (MC): r(L) = r0 * (L/L0)^(1/ε)
 PS Change: ΔPS = r_policy*L_policy - r_sq*L_sq - ∫[L_sq to L_policy] r(L) dL
 """
+# calculate PS changes for all scenarios
 function calculate_ps_land_changes(solutions, solution_sq, params; scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(solutions)) : scenarios
     scenario_list = filter(s -> s != :statusquo, scenario_list)
@@ -251,9 +229,8 @@ function calculate_ps_land_changes(solutions, solution_sq, params; scenarios=not
     return ps_land_changes
 end
 
-"""
-Display land producer surplus changes
-"""
+
+# Display land producer surplus changes
 function display_ps_land_changes(ps_land_changes; scenarios=nothing,
     title="LAND PRODUCER SURPLUS CHANGES (billion \$)")
     scenario_list = isnothing(scenarios) ? collect(keys(ps_land_changes)) : scenarios
@@ -297,7 +274,7 @@ ps_land_base = calculate_ps_land_changes(
     status_quo,
     params;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-)
+);
 
 display_ps_land_changes(
     ps_land_base;
@@ -311,7 +288,7 @@ ps_land_equivalent = calculate_ps_land_changes(
     status_quo,
     params;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-)
+);
 
 display_ps_land_changes(
     ps_land_equivalent;
@@ -322,43 +299,38 @@ display_ps_land_changes(
 println("\n" * "="^80)
 
 
-
-
-# =================================================================================
-
-
-"""
-Calculate government revenue change for a single scenario
-"""
+# =====================
+# 3) GOVERNMENT REVENUE CHANGES (only for carbon tax and tax credit)
+# =====================
+# GR in Status quo is zero
 function calculate_gov_revenue_change(solution_policy, implicit_taxes_policy, scenario)
-    # Only carbon tax and tax credit have explicit government revenue
-    if !(scenario in [:carbontax, :taxcredit])
+    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
+        :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    ELIGIBLE_SAF = [:saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+
+    # ⭐ startswith로 정책 타입 판별
+    scenario_str = String(scenario)
+    is_carbontax = startswith(scenario_str, "carbontax")
+    is_taxcredit = startswith(scenario_str, "taxcredit")
+
+    if !(is_carbontax || is_taxcredit)
         return 0.0
     end
 
-    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
-        :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
-
     gov_revenue = 0.0
 
-    if scenario == :carbontax
-        # Carbon tax: all aviation fuels (government receives)
+    if is_carbontax
         for fuel in AVIATION_FUELS
-            t_i = implicit_taxes_policy[fuel][:carbon_tax]  # Positive
+            t_i = implicit_taxes_policy[fuel][:carbon_tax]
             q_i = solution_policy.q[fuel]
-            gov_revenue += t_i * q_i  # Positive revenue
+            gov_revenue += t_i * q_i
         end
-
-    elseif scenario == :taxcredit
-        # Tax credit: only SAF with CI ≤ 50% of jet fuel
-        # (saf_atj_conv is NOT eligible - CI > 50%)
-        ELIGIBLE_SAF = [:saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
-
+    elseif is_taxcredit
         for saf in ELIGIBLE_SAF
             if haskey(implicit_taxes_policy, saf) && haskey(implicit_taxes_policy[saf], :tax_credit)
-                s_i = implicit_taxes_policy[saf][:tax_credit]  # Already negative
+                s_i = implicit_taxes_policy[saf][:tax_credit]
                 q_i = solution_policy.q[saf]
-                gov_revenue += s_i * q_i  # Negative (government expenditure)
+                gov_revenue += s_i * q_i
             end
         end
     end
@@ -366,34 +338,30 @@ function calculate_gov_revenue_change(solution_policy, implicit_taxes_policy, sc
     return gov_revenue
 end
 
-"""
-Calculate government revenue changes for all scenarios
-"""
 function calculate_gr_changes(solutions; scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(solutions)) : scenarios
     scenario_list = filter(s -> s != :statusquo, scenario_list)
-
     gr_changes = Dict()
 
     for scenario in scenario_list
         solution_policy = solutions[scenario]
         implicit_taxes_policy = solution_policy.implicit_taxes
 
-        # Status quo GR = 0, so change = policy GR
         gr = calculate_gov_revenue_change(solution_policy, implicit_taxes_policy, scenario)
 
+        # ⭐ startswith로 분류
+        scenario_str = String(scenario)
         gr_changes[scenario] = (
             total=clean_small(gr),
-            carbon_tax=scenario == :carbontax ? clean_small(gr) : 0.0,
-            tax_credit=scenario == :taxcredit ? clean_small(gr) : 0.0
+            carbon_tax=startswith(scenario_str, "carbontax") ? clean_small(gr) : 0.0,
+            tax_credit=startswith(scenario_str, "taxcredit") ? clean_small(gr) : 0.0
         )
     end
 
     return gr_changes
 end
-"""
-Display government revenue changes (simple 2-row format)
-"""
+
+# Display government revenue
 function display_gr_changes(gr_changes; scenarios=nothing, title="GOVERNMENT REVENUE CHANGES (billion \$)")
     scenario_list = isnothing(scenarios) ? collect(keys(gr_changes)) : scenarios
 
@@ -401,7 +369,6 @@ function display_gr_changes(gr_changes; scenarios=nothing, title="GOVERNMENT REV
     println(title)
     println("="^80)
 
-    # Create 2-row DataFrame: Policy names and Total GR
     df = DataFrame()
 
     # Add scenario columns
@@ -416,6 +383,8 @@ function display_gr_changes(gr_changes; scenarios=nothing, title="GOVERNMENT REV
 
     println("\n" * "="^80)
 end
+
+# run government revenue analysis
 # Base scenarios
 gr_changes_base = calculate_gr_changes(
     results_base_analysis;
@@ -424,7 +393,7 @@ gr_changes_base = calculate_gr_changes(
 
 display_gr_changes(
     gr_changes_base;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],  # ⭐ 순서 지정
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
     title="BASE SCENARIOS: GOVERNMENT REVENUE CHANGES"
 )
 
@@ -436,7 +405,7 @@ gr_changes_equivalent = calculate_gr_changes(
 
 display_gr_changes(
     gr_changes_equivalent;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],  # ⭐ 순서 지정
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
     title="EQUIVALENT SCENARIOS: GOVERNMENT REVENUE CHANGES"
 )
 
@@ -475,42 +444,17 @@ function calculate_environmental_benefit(solutions, solution_sq, scc; scenarios=
         total_reduction = emissions_sq.total - emissions_policy.total
 
         # Environmental benefits (billion $)
-        # (billion ton CO2e) × ($/ton CO2e) / (1e9 $/billion $) = billion $
         avi_benefit = avi_reduction * scc
         road_benefit = road_reduction * scc
         food_benefit = food_reduction * scc
         total_benefit = total_reduction * scc
 
         env_benefits[scenario] = (
-            # Emission reductions (billion ton CO2e)
-            avi_reduction=clean_small(avi_reduction),
-            road_reduction=clean_small(road_reduction),
-            food_reduction=clean_small(food_reduction),
-            total_reduction=clean_small(total_reduction),
-
-            # Emission reductions (MMT CO2e) - for display
-            avi_reduction_mmt=clean_small(avi_reduction * 1000),
-            road_reduction_mmt=clean_small(road_reduction * 1000),
-            food_reduction_mmt=clean_small(food_reduction * 1000),
-            total_reduction_mmt=clean_small(total_reduction * 1000),
-
-            # Environmental benefits (billion $) ← 핵심!
+            # Environmental benefits (billion $)
             avi_benefit=clean_small(avi_benefit),
             road_benefit=clean_small(road_benefit),
             food_benefit=clean_small(food_benefit),
-            total_benefit=clean_small(total_benefit),
-
-            # Status quo emissions (billion ton CO2e)
-            emissions_sq_avi=clean_small(emissions_sq.aviation),
-            emissions_sq_road=clean_small(emissions_sq.road),
-            emissions_sq_food=clean_small(emissions_sq.food),
-            emissions_sq_total=clean_small(emissions_sq.total),
-
-            # Policy emissions (billion ton CO2e)
-            emissions_policy_avi=clean_small(emissions_policy.aviation),
-            emissions_policy_road=clean_small(emissions_policy.road),
-            emissions_policy_food=clean_small(emissions_policy.food),
-            emissions_policy_total=clean_small(emissions_policy.total)
+            total_benefit=clean_small(total_benefit)
         )
     end
 
@@ -559,16 +503,9 @@ function display_environmental_benefits(env_benefits, scc; scenarios=nothing,
     println("\n" * "="^130)
 end
 
-# =================================================================================
-# RUN ENVIRONMENTAL BENEFIT ANALYSIS
-# =================================================================================
-
+# run environmental benefit analysis
 # Social Cost of Carbon ($/ton CO2e)
 const SCC = 190.0  # EPA 2023 central estimate
-
-println("\n" * "="^80)
-println("ENVIRONMENTAL BENEFIT ANALYSIS")
-println("="^80)
 
 # Base scenarios
 env_benefits_base = calculate_environmental_benefit(
@@ -600,14 +537,11 @@ display_environmental_benefits(
     title="EQUIVALENT SCENARIOS: ENVIRONMENTAL BENEFITS (Target SAF = $(target_saf) billion gallons)"
 )
 
-println("\n" * "="^80)
-println("ENVIRONMENTAL BENEFIT ANALYSIS COMPLETE")
-println("="^80)
+# =============================================================
+# 4) TOTAL WELFARE CALCULATION
+# =============================================================
 
-
-"""
-Calculate total welfare changes combining all components
-"""
+# Calculate total welfare changes combining all components
 function calculate_total_welfare(cs_changes, ps_land_changes, gr_changes, env_benefits; scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(cs_changes)) : scenarios
     scenario_list = filter(s -> s != :statusquo, scenario_list)
@@ -616,20 +550,19 @@ function calculate_total_welfare(cs_changes, ps_land_changes, gr_changes, env_be
 
     for scenario in scenario_list
         cs_change = cs_changes[scenario][:total]
-        ps_land_change = ps_land_changes[scenario].ps_change  # ⭐ 수정
+        ps_land_change = ps_land_changes[scenario].ps_change
         gr_change = gr_changes[scenario].total
         env_benefit = env_benefits[scenario].total_benefit
 
         # Private surplus = CS + PS (Land)
-        private_surplus = cs_change + ps_land_change + gr_change  # ⭐ 수정
+        private_surplus = cs_change + ps_land_change + gr_change
 
         # Social welfare = Private surplus + Environmental benefit
-        # Note: GR is a transfer, not included in social welfare
         social_welfare = private_surplus + env_benefit
 
         welfare_summary[scenario] = (
             cs_change=clean_small(cs_change),
-            ps_land_change=clean_small(ps_land_change),  # ⭐ 수정
+            ps_land_change=clean_small(ps_land_change),
             gr_change=clean_small(gr_change),
             env_benefit=clean_small(env_benefit),
             private_surplus=clean_small(private_surplus),
@@ -640,9 +573,7 @@ function calculate_total_welfare(cs_changes, ps_land_changes, gr_changes, env_be
     return welfare_summary
 end
 
-"""
-Display total welfare summary table
-"""
+# Display total welfare summary table
 function display_welfare_summary(welfare_summary; scenarios=nothing,
     title="WELFARE SUMMARY")
     scenario_list = isnothing(scenarios) ? collect(keys(welfare_summary)) : scenarios
@@ -662,7 +593,7 @@ function display_welfare_summary(welfare_summary; scenarios=nothing,
     # Define metrics to display
     metrics = [
         ("CS Change (a)", :cs_change),
-        ("PS Change (b)", :ps_land_change),  # ⭐ 수정
+        ("PS Change (b)", :ps_land_change),
         ("Gov Revenue (c)", :gr_change),
         ("Env Benefit (d)", :env_benefit),
         ("Private Surplus (∆=a+b+c)", :private_surplus),
@@ -684,18 +615,11 @@ function display_welfare_summary(welfare_summary; scenarios=nothing,
     println("\n" * "="^130)
 end
 
-# =================================================================================
-# RUN TOTAL WELFARE ANALYSIS
-# =================================================================================
-
-println("\n" * "="^80)
-println("TOTAL WELFARE SUMMARY")
-println("="^80)
-
+# Run total welfare analysis
 # Base scenarios
 welfare_summary_base = calculate_total_welfare(
     cs_changes_base,
-    ps_land_base,  # ⭐ 수정
+    ps_land_base,
     gr_changes_base,
     env_benefits_base;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
@@ -710,7 +634,7 @@ display_welfare_summary(
 # Equivalent/Target scenarios
 welfare_summary_equivalent = calculate_total_welfare(
     cs_changes_equivalent,
-    ps_land_equivalent,  # ⭐ 수정
+    ps_land_equivalent,
     gr_changes_equivalent,
     env_benefits_equivalent;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
@@ -722,34 +646,25 @@ display_welfare_summary(
     title="EQUIVALENT SCENARIOS: WELFARE SUMMARY (Target SAF = $(target_saf) billion gallons)"
 )
 
-println("\n" * "="^80)
-println("TOTAL WELFARE ANALYSIS COMPLETE")
-println("="^80)
 
 # =================================================================================
-# SAVE COMPLETE RESULTS WITH ALL WELFARE ANALYSIS
+# 5) SAVE COMPLETE RESULTS WITH ALL WELFARE ANALYSIS
 # =================================================================================
 
-println("\n" * "="^80)
-println("SAVING COMPLETE BASE ANALYSIS RESULTS")
-println("="^80)
-
-# Status quo (완전한 버전 - emissions 포함)
+# Status quo
 status_quo = results_base_analysis[:statusquo]
 
 # Save complete base analysis
 @save "results_base_complete.jld2" results_base_analysis policy_configs_base status_quo cs_changes_base ps_land_base gr_changes_base env_benefits_base
-println("✓ Complete base analysis saved to results_base_complete.jld2")
 
 # Save complete target/equivalent analysis
 @save "results_target_complete.jld2" results_equivalent_analysis policy_configs_target status_quo cs_changes_equivalent ps_land_equivalent gr_changes_equivalent env_benefits_equivalent target_saf
-println("✓ Complete target analysis saved to results_target_complete.jld2")
-
-println("\n" * "="^80)
-println("ALL RESULTS SAVED - READY FOR EXTENDED GRID ANALYSIS")
-println("="^80)
 
 
+
+
+
+# below is my trial to see if fossil fuel producer surplus is really zero.
 """
 Calculate scarcity rents from binding common constraints
 """
@@ -1006,7 +921,7 @@ end
 
 # Base
 ps_nonag_base, ps_sq_by_fuel = calculate_ps_nonag_changes(
-    results_base_implicit_tax,
+    results_base_analysis,
     status_quo,
     params;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
@@ -1021,7 +936,7 @@ display_ps_nonag_changes(
 
 # Target
 ps_nonag_target, _ = calculate_ps_nonag_changes(
-    results_target_implicit_tax,
+    results_equivalent_analysis,
     status_quo,
     params;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
@@ -1037,3 +952,6 @@ display_ps_nonag_changes(
 println("\n" * "="^80)
 println("WELFARE ANALYSIS COMPLETE")
 println("="^80)
+
+
+
