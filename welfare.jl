@@ -663,7 +663,7 @@ status_quo = results_base_analysis[:statusquo]
 
 
 
-
+#=
 # below is my trial to see if fossil fuel producer surplus is really zero.
 """
 Calculate scarcity rents from binding common constraints
@@ -953,5 +953,5 @@ println("\n" * "="^80)
 println("WELFARE ANALYSIS COMPLETE")
 println("="^80)
 
-
+=#
 

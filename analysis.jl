@@ -41,7 +41,8 @@ function display_comparison_tables(solutions, params, policy_configs;
                 Policy=String[],
                 Parameter_Name=String[],
                 Parameter_Value=Float64[],
-                Actual_SAF=Float64[]
+                Target_Metric=String[],
+                Actual_Value=Float64[]
             )
 
             for policy_type in [:statusquo, :carbontax, :rfs, :lcfs, :taxcredit]
@@ -62,7 +63,18 @@ function display_comparison_tables(solutions, params, policy_configs;
                         0.0
                     end
 
-                    push!(param_df, (label, param_name, param_value, result.actual_saf))
+                    if haskey(result, :actual_saf)
+                        target_metric = "SAF (billion gal)"
+                        actual_value = result.actual_saf
+                    elseif haskey(result, :actual_emission)
+                        target_metric = "Emissions (Bton CO2e)"
+                        actual_value = result.actual_emission
+                    else
+                        target_metric = "N/A"
+                        actual_value = NaN
+                    end
+
+                    push!(param_df, (label, param_name, param_value, target_metric, actual_value))
                 end
             end
 
@@ -656,3 +668,6 @@ for (scenario, solution) in equivalent_solutions
 end
 
 @save "results_equivalent_analysis.jld2" results_equivalent_analysis policy_configs_target equivalent_policies target_saf
+
+
+

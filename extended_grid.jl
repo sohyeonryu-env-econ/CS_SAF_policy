@@ -33,6 +33,7 @@ println("  Total: ", status_quo.emissions.total)
 # 1) Define and solve extended policy grid scenarios
 # =====================
 # Define policy grid
+
 const POLICY_RANGES = (
     t=0:0.912:456,
     θ_avi=0:0.001:0.574,
@@ -747,7 +748,7 @@ diesel_config = (
     main_fuel_ylims=(43.2, 45),
     biofuel_types=[
         (:q_rd_soy, "Soy Renewable Diesel", :red),
-        (:q_rd_nonsoy, "Non-soy Renewable Diesel", :orange),
+        (:q_rd_nonsoy, "Non-soy Renewable Diesel", :green),
         (:q_biodiesel_soy, "Soy Biodiesel", :blue),
         (:q_biodiesel_nonsoy, "Non-soy Biodiesel", :purple)
     ],
@@ -875,7 +876,7 @@ function plot_food_production(results_extended_analysis)
         legendfontsize=11,
         size=(2500, 80)
     )
-    plot!(p_legend, [NaN], [NaN], label="Corn Feedstock", linewidth=2, color=:gold)
+    plot!(p_legend, [NaN], [NaN], label="Corn for food (Feedstock)", linewidth=2, color=:gold)
     plot!(p_legend, [NaN], [NaN], label="Total Corn (+ DDGS)", linewidth=2, color=:darkorange)
     plot!(p_legend, [NaN], [NaN], label="Soybean Oil", linewidth=2, color=:darkgreen)
     plot!(p_legend, [NaN], [NaN], label="Soybean Meal", linewidth=2, color=:brown)
@@ -1081,252 +1082,173 @@ p_emissions = plot_emissions_by_policy(results_extended_analysis)
 
 
 
+# Stacked quantity figure
+# Plot fuel production by policy grid with stacked area charts
+function plot_fuel_production_stacked(results_df, fuel_config)
 
+    policies = [
+        ("carbontax", :t, "Carbon Tax (\$ / ton CO2e)", "Carbon Tax Policy", false),
+        ("rfs", :θ_avi, "RFS Aviation Mandate (θ_avi)", "RFS Aviation Policy", false),
+        ("lcfs", :σ, "LCFS Standard (σ)", "LCFS Policy", true),
+        ("taxcredit", :p, "Tax Credit Rate (\$ / gallon)", "Tax Credit Policy", false)
+    ]
 
-# extended_grid.jl에 추가하여 실행
+    plots = []
 
-# 1. 특정 시나리오의 상세 비용 분석
-function diagnose_diesel_fuels(scenario_name, solution, params, config)
-    println("\n" * "="^80)
-    println("DIESEL FUEL COST ANALYSIS: $scenario_name")
-    println("="^80)
+    for (i, (policy_type, xcol, xlabel, title, reverse_sort)) in enumerate(policies)
+        df = filter(row -> row.policy_type == policy_type, results_df)
+        sort!(df, xcol, rev=reverse_sort)
 
-    sol = solution
-    coeff = params.coeff
-    supply = params.supply
-    fuel_cost = supply.fuel
+        x_min = minimum(df[!, xcol])
+        x_max = maximum(df[!, xcol])
 
-    # RFS dual
-    λ_rfs = sol.duals.λ_rfs
+        x_vals = df[!, xcol]
 
-    # 생산량
-    q_rd_soy = sol.q[:rd_soy]
-    q_rd_nonsoy = sol.q[:rd_nonsoy]
-    q_bd_soy = sol.q[:biodiesel_soy]
-    q_bd_nonsoy = sol.q[:biodiesel_nonsoy]
-
-    total_rd = q_rd_soy + q_rd_nonsoy
-    total_bd = q_bd_soy + q_bd_nonsoy
-    total_hefa = total_rd + sol.q[:saf_hefa_conv] + sol.q[:saf_hefa_cs] + sol.q[:saf_hefa_nonsoy]
-
-    println("\nProduction:")
-    println("  RD (soy):        $(round(q_rd_soy, digits=4))")
-    println("  RD (nonsoy):     $(round(q_rd_nonsoy, digits=4))")
-    println("  BD (soy):        $(round(q_bd_soy, digits=4))")
-    println("  BD (nonsoy):     $(round(q_bd_nonsoy, digits=4))")
-    println("  Total HEFA:      $(round(total_hefa, digits=4))")
-
-    # HEFA 공정 비용
-    v_hefa = fuel_cost[:saf_hefa_shared].v
-    c0_hefa = fuel_cost[:saf_hefa_shared].c0
-    c2_hefa = fuel_cost[:saf_hefa_shared].c2
-
-    process_mc_hefa = c0_hefa + c2_hefa * max(0, total_hefa - v_hefa)^2
-
-    println("\nHEFA Process Cost:")
-    println("  v (kink point):  $(round(v_hefa, digits=4))")
-    println("  c0:              $(round(c0_hefa, digits=4))")
-    println("  c2:              $(round(c2_hefa, digits=4))")
-    println("  Total HEFA:      $(round(total_hefa, digits=4))")
-    println("  Over kink:       $(round(max(0, total_hefa - v_hefa), digits=4))")
-    println("  MC_hefa:         $(round(process_mc_hefa, digits=4))")
-
-    # Biodiesel 비용
-    v_bd = fuel_cost[:biodiesel_soy].v
-    c0_bd = fuel_cost[:biodiesel_soy].c0
-    c2_bd = fuel_cost[:biodiesel_soy].c2
-
-    mc_bd_soy = c0_bd + c2_bd * max(0, q_bd_soy - v_bd)^2
-    mc_bd_nonsoy = c0_bd + c2_bd * max(0, q_bd_nonsoy - v_bd)^2
-
-    println("\nBiodiesel Cost:")
-    println("  v (kink point):  $(round(v_bd, digits=4))")
-    println("  c0:              $(round(c0_bd, digits=4))")
-    println("  c2:              $(round(c2_bd, digits=4))")
-    println("  MC_bd_soy:       $(round(mc_bd_soy, digits=4))")
-    println("  MC_bd_nonsoy:    $(round(mc_bd_nonsoy, digits=4))")
-
-    # 피드스톡 가격
-    p_soy = sol.p_f[:feedstock_soy_n]
-    nonsoy_price = coeff.nonsoy_feedstock_price
-    alpha_soy = coeff.alpha[:rd_soy]
-
-    println("\nFeedstock:")
-    println("  Soy price:       $(round(p_soy, digits=4)) \$/lb")
-    println("  Non-soy price:   $(round(nonsoy_price, digits=4)) \$/lb")
-    println("  Alpha (lb/gal):  $(round(alpha_soy, digits=4))")
-
-    # Total cost 계산
-    hefa_premium = coeff.hefa_saf_premium
-
-    total_cost_rd_soy = process_mc_hefa - hefa_premium + alpha_soy * p_soy - 1.7 * λ_rfs
-    total_cost_rd_nonsoy = process_mc_hefa - hefa_premium + alpha_soy * nonsoy_price - 1.7 * λ_rfs
-    total_cost_bd_soy = mc_bd_soy + alpha_soy * p_soy - 1.5 * λ_rfs
-    total_cost_bd_nonsoy = mc_bd_nonsoy + alpha_soy * nonsoy_price - 1.5 * λ_rfs
-
-    println("\nNet Cost (MC + Feedstock - RFS Credit):")
-    println("  RD soy:          $(round(total_cost_rd_soy, digits=4))")
-    println("  RD nonsoy:       $(round(total_cost_rd_nonsoy, digits=4))")
-    println("  BD soy:          $(round(total_cost_bd_soy, digits=4))")
-    println("  BD nonsoy:       $(round(total_cost_bd_nonsoy, digits=4))")
-
-    println("\nCost Comparison:")
-    println("  BD_soy - RD_soy:     $(round(total_cost_bd_soy - total_cost_rd_soy, digits=4))")
-    println("  BD_nonsoy - RD_nonsoy: $(round(total_cost_bd_nonsoy - total_cost_rd_nonsoy, digits=4))")
-
-    println("\nλ_rfs = $(round(λ_rfs, digits=4))")
-    println("="^80)
-end
-
-# 2. 여러 시나리오 비교
-scenarios_to_check = [:statusquo, :carbontax_100, :carbontax_200, :rfs_100, :lcfs_50, :taxcredit_500]
-
-for scenario in scenarios_to_check
-    if haskey(all_solutions, scenario) && !isnothing(all_solutions[scenario])
-        config = EXTENDED_POLICY_MATRIX[scenario]
-        diagnose_diesel_fuels(scenario, all_solutions[scenario], params, config)
-    end
-end
-
-function diagnose_spillover_effect(scenario_name, solution, params)
-    println("\n" * "="^80)
-    println("SPILLOVER ANALYSIS: $scenario_name")
-    println("="^80)
-
-    sol = solution
-
-    # Aviation sector
-    total_saf = sum(sol.q[g] for g in [:saf_atj_conv, :saf_atj_cs,
-        :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy])
-    jet_fuel = sol.q[:jet_fuel]
-    saf_share = total_saf / (total_saf + jet_fuel)
-
-    # Road sector  
-    total_rd = sol.q[:rd_soy] + sol.q[:rd_nonsoy]
-    total_bd = sol.q[:biodiesel_soy] + sol.q[:biodiesel_nonsoy]
-    diesel = sol.q[:diesel]
-    road_biofuel_share = (total_rd + total_bd) / (total_rd + total_bd + diesel)
-
-    # Feedstock
-    p_soy = sol.p_f[:feedstock_soy_n]
-
-    # Total soy to aviation vs road
-    soy_to_avi = (sol.q[:saf_hefa_conv] + sol.q[:saf_hefa_cs]) * 8.0  # alpha
-    soy_to_road = (sol.q[:rd_soy] + sol.q[:biodiesel_soy]) * 7.55
-
-    println("\nAviation Sector:")
-    println("  SAF: $(round(total_saf, digits=3)) billion gal")
-    println("  Jet fuel: $(round(jet_fuel, digits=3)) billion gal")
-    println("  SAF share: $(round(saf_share*100, digits=2))%")
-
-    println("\nRoad Diesel Sector:")
-    println("  RD: $(round(total_rd, digits=3)) billion gal")
-    println("  BD: $(round(total_bd, digits=3)) billion gal")
-    println("  Fossil diesel: $(round(diesel, digits=3)) billion gal")
-    println("  Biofuel share: $(round(road_biofuel_share*100, digits=2))%")
-
-    println("\nFeedstock Allocation:")
-    println("  Soy price: $(round(p_soy, digits=3)) \$/lb")
-    println("  Soy to aviation: $(round(soy_to_avi, digits=3)) billion lbs")
-    println("  Soy to road: $(round(soy_to_road, digits=3)) billion lbs")
-    println("  Aviation share: $(round(soy_to_avi/(soy_to_avi+soy_to_road)*100, digits=2))%")
-
-    println("="^80)
-end
-
-# Compare scenarios
-diagnose_spillover_effect(:statusquo, all_solutions[:statusquo], params)
-diagnose_spillover_effect(:rfs_100, all_solutions[:rfs_100], params)
-diagnose_spillover_effect(:rfs_300, all_solutions[:rfs_300], params)
-diagnose_spillover_effect(:lcfs_50, all_solutions[:lcfs_50], params)
-
-
-# =================================================================================
-# Non-soy Capacity Constraint Check
-# =================================================================================
-
-function analyze_nonsoy_bottleneck(all_solutions, params)
-    # 1. 시나리오별 Non-soy 사용량 계산
-    alpha_val = params.coeff.alpha[:rd_nonsoy] # 7.55
-    capacity_limit = 30.0
-
-    analysis_data = []
-
-    for (name, sol) in all_solutions
-        isnothing(sol) && continue
-
-        # Non-soy 연료들 합계 (원료 기준)
-        usage = alpha_val * (
-            sol.q[:biodiesel_nonsoy] +
-            sol.q[:rd_nonsoy] +
-            sol.q[:saf_hefa_nonsoy]
+        # larger biofuel below
+        biofuel_sorted = sort(fuel_config.biofuel_types,
+            by=x -> mean(df[!, x[1]]),
+            rev=true
         )
 
-        # Dual variable (Shadow price) 추출
-        # PATHSolver 결과에서 λ_nonsoy_capacity의 값을 가져옵니다.
-        shadow_price = sol.duals.λ_nonsoy_capacity
+        p = plot(
+            xlabel=xlabel,
+            ylabel="Quantity (billion gallons)",
+            title=title,
+            titlefontsize=16,
+            titlefontweight=:bold,
+            legend=false,
+            grid=true,
+            xlims=(x_min, x_max),
+            ylims=fuel_config.ylims,
+            margin=10Plots.mm,
+            guidefontsize=11
+        )
 
-        push!(analysis_data, (
-            scenario=name,
-            policy=occursin("carbontax", String(name)) ? "CarbonTax" :
-                   occursin("rfs", String(name)) ? "RFS" :
-                   occursin("lcfs", String(name)) ? "LCFS" :
-                   occursin("taxcredit", String(name)) ? "TaxCredit" : "StatusQuo",
-            usage=usage,
-            slack=capacity_limit - usage,
-            shadow_price=shadow_price
-        ))
-    end
+        # Main fuel (base layer)
+        main_fuel_vals = df[!, fuel_config.main_fuel]
+        plot!(p, x_vals, main_fuel_vals,
+            fillrange=fuel_config.ylims[1],
+            fillalpha=0.7, fillcolor=:lightgray,
+            linewidth=1.5, color=:black, label=""
+        )
 
-    df_check = DataFrame(analysis_data)
+        # Biofuels
+        cumsum_vals = copy(main_fuel_vals)
+        for (col, label, color) in biofuel_sorted
+            biofuel_vals = df[!, col]
+            new_cumsum = cumsum_vals .+ biofuel_vals
 
-    # 2. 결과 요약 출력
-    println("\n=== Non-soy Capacity Analysis (Limit: $capacity_limit) ===")
+            plot!(p, x_vals, new_cumsum,
+                fillrange=cumsum_vals,
+                fillalpha=0.7, fillcolor=color,
+                linewidth=1.5, color=color, label=""
+            )
 
-    # 용량의 99.9% 이상을 사용 중인 시나리오 필터링
-    bottlenecked = filter(row -> row.usage >= capacity_limit * 0.999, df_check)
-
-    println("Total scenarios checked: ", nrow(df_check))
-    println("Scenarios hitting capacity: ", nrow(bottlenecked))
-
-    if nrow(bottlenecked) > 0
-        println("\nMax Shadow Price (Value of additional 1 unit of Non-soy):")
-        # 정책별로 가장 병목이 심한(shadow price가 높은) 지점 출력
-        for p in unique(df_check.policy)
-            p_df = filter(row -> row.policy == p, bottlenecked)
-            if !isempty(p_df)
-                max_row = p_df[argmax(p_df.shadow_price), :]
-                @printf("  %-10s: Max Shadow Price = %.4f (at %s)\n", p, max_row.shadow_price, max_row.scenario)
-            end
+            cumsum_vals = new_cumsum
         end
+
+        push!(plots, p)
     end
 
-    # 3. 시각화 (Shadow Price가 0보다 큰 구간 확인)
-    p_check = plot(layout=(2, 1), size=(1000, 800))
+    # Legend
+    p_legend = plot(
+        legend=:top,
+        legendcolumns=fuel_config.legendcolumns,
+        grid=false, showaxis=false, ticks=false,
+        xlims=(0, 1), ylims=(0, 1),
+        framestyle=:none,
+        legendfontsize=10,
+        size=(2200, 80)
+    )
 
-    # Usage plot
-    scatter!(p_check[1], df_check.usage, group=df_check.policy,
-        title="Non-soy Feedstock Total Usage", ylabel="Usage (Million Units)",
-        legend=:outerright)
-    hline!(p_check[1], [30.0], color=:red, linestyle=:dash, label="Capacity Limit")
+    # Main fuel legend
+    plot!(p_legend, [NaN], [NaN],
+        label=fuel_config.main_fuel_label,
+        linewidth=3, color=:black, fillalpha=0.7, fillcolor=:lightgray
+    )
 
-    # Shadow Price plot
-    scatter!(p_check[2], df_check.shadow_price, group=df_check.policy,
-        title="Shadow Price (λ_nonsoy_capacity)", ylabel="Price (\$)",
-        legend=:outerright)
+    # Biofuel legends
+    for (col, label, color) in fuel_config.biofuel_types
+        plot!(p_legend, [NaN], [NaN],
+            label=label, linewidth=3, color=color,
+            fillalpha=0.7, fillcolor=color
+        )
+    end
 
-    return df_check, p_check
+    final_plot = plot(
+        plot(plots..., layout=(2, 2)),
+        p_legend,
+        layout=grid(2, 1, heights=[0.95, 0.05]),
+        size=(2500, 1800),
+        plot_title=fuel_config.plot_title,
+        plot_titlefontsize=22,
+        plot_titlefontweight=:bold,
+        margin=10Plots.mm
+    )
+
+    return final_plot
 end
 
-# 실행
-df_nonsoy, p_nonsoy = analyze_nonsoy_bottleneck(all_solutions, params)
-display(p_nonsoy)
+# =====================
+# Aviation Fuel Configuration
+# =====================
+aviation_config = (
+    main_fuel=:q_jet_fuel,
+    main_fuel_label="Jet Fuel",
+    ylims=(11, 22),
+    biofuel_types=[
+        (:q_saf_atj_conv, "Conventional ATJ-SAF", :blue),
+        (:q_saf_atj_cs, "Climate-Smart ATJ-SAF", :red),
+        (:q_saf_hefa_conv, "Conventional HEFA-SAF", :green),
+        (:q_saf_hefa_cs, "Climate-Smart HEFA-SAF", :orange),
+        (:q_saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple)
+    ],
+    plot_title="Aviation Fuel Production by Policy Stringency",
+    filename="aviation_fuel_stacked.png",
+    legendcolumns=6
+)
 
-# 구체적으로 어떤 연료가 Non-soy를 점유하는지 보고 싶을 때 (예: LCFS 강한 구간)
-function check_composition(scenario_name, all_solutions)
-    sol = all_solutions[scenario_name]
-    println("\nComposition of $scenario_name:")
-    println("  Non-soy BD: ", sol.q[:biodiesel_nonsoy])
-    println("  Non-soy RD: ", sol.q[:rd_nonsoy])
-    println("  Non-soy SAF: ", sol.q[:saf_hefa_nonsoy])
-end
+aviation_plot = plot_fuel_production_stacked(results_df, aviation_config)
+savefig(aviation_plot, aviation_config.filename)
+display(aviation_plot)
+
+# =====================
+# Road Gasoline Configuration
+# =====================
+gasoline_config = (
+    main_fuel=:q_gasoline,
+    main_fuel_label="Gasoline",
+    ylims=(0, 150),
+    biofuel_types=[
+        (:q_ethanol, "Ethanol", :red)
+    ],
+    plot_title="Road Gasoline Fuel Production by Policy Stringency",
+    filename="road_gasoline_fuel_stacked.png",
+    legendcolumns=2
+)
+
+gasoline_plot = plot_fuel_production_stacked(results_df, gasoline_config)
+savefig(gasoline_plot, gasoline_config.filename)
+display(gasoline_plot)
+
+# =====================
+# Diesel Configuration
+# =====================
+diesel_config = (
+    main_fuel=:q_diesel,
+    main_fuel_label="Diesel",
+    ylims=(42, 50),
+    biofuel_types=[
+        (:q_rd_soy, "Soy Renewable Diesel", :red),
+        (:q_rd_nonsoy, "Non-soy Renewable Diesel", :green),
+        (:q_biodiesel_soy, "Soy Biodiesel", :blue),
+        (:q_biodiesel_nonsoy, "Non-soy Biodiesel", :purple)
+    ],
+    plot_title="Diesel Fuel Production by Policy Stringency",
+    filename="diesel_fuel_stacked.png",
+    legendcolumns=5
+)
+
+diesel_plot = plot_fuel_production_stacked(results_df, diesel_config)
+savefig(diesel_plot, diesel_config.filename)
+display(diesel_plot)
