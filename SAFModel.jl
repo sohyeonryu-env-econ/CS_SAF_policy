@@ -102,9 +102,9 @@ r = Dict(
     :saf_atj_conv => 0.59,
     :saf_atj_cs => 0.59,
     :ethanol => 0.3448,
-    :saf_hefa_conv => 8.0,
-    :saf_hefa_cs => 8.0,
-    :saf_hefa_nonsoy => 8.0,
+    :saf_hefa_conv => 9.0,
+    :saf_hefa_cs => 9.0,
+    :saf_hefa_nonsoy => 9.0,
     :biodiesel_soy => 7.55,
     :biodiesel_nonsoy => 7.55,
     :rd_soy => 8.5,
@@ -172,18 +172,17 @@ demand = Dict(
 c0_vec = [
     2.338,  # 1. jet_fuel
     0.32,               # 2. saf_atj (shared by conv & cs ATJ SAF)
-    1.56,               # 3. saf_hefa (shared by conv, cs, nonsoy HEFA SAF, rd_soy, rd_nonsoy)
+    1.145,               # 3. saf_hefa (shared by conv, cs, nonsoy HEFA SAF, rd_soy, rd_nonsoy)
     2.7,               # 4. gasoline
     0.23,                # 5. ethanol
     2.435,              # 6. diesel
     1.0               # 7. biodiesel (shared by soy and nonsoy biodiesel)
-    #1.0                # 8. biodiesel_nonsoy
 ]
 #=
 #LOW
 c0_vec = [
     2.338,  # 1. jet_fuel
-    0.32,               # 2. saf_atj (shared by conv & cs ATJ SAF)
+    1.0,               # 2. saf_atj (shared by conv & cs ATJ SAF)
     0.44,               # 3. saf_hefa (shared by conv, cs, nonsoy HEFA SAF, rd_soy, rd_nonsoy)
     2.7,               # 4. gasoline
     0.23,                # 5. ethanol
@@ -292,7 +291,7 @@ supply = (
 const nonsoy_feedstock_price = 0.49
 
 # HEFA SAF additional processing cost compared to RD ($/gal)
-const hefa_saf_premium = 0.08
+const hefa_saf_premium = 0.064
 
 coeff = (
     delta=δ,
