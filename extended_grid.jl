@@ -38,7 +38,7 @@ const POLICY_RANGES = (
     t=0:0.912:456,
     θ_avi=0:0.001:0.574,
     σ=0.0:0.00027:0.1332,
-    p=0:0.052:26.0
+    p=0:0.052:50.0
 )
 
 function create_policy_scenarios()
@@ -285,19 +285,6 @@ end
 # Run MAC calculation
 mac_extended = calculate_mac_extended(results_extended_analysis)
 
-# Display summary
-using Statistics
-for (policy_type, mac_data) in pairs(mac_extended)
-    println("\n$(uppercase(String(policy_type))):")
-    println("  Number of grid points: $(length(mac_data))")
-    if !isempty(mac_data)
-        macs_private = [d.mac_private for d in mac_data]
-        macs_social = [d.mac_social for d in mac_data]
-        println("  MAC Private: min=$(minimum(macs_private)), max=$(maximum(macs_private)), mean=$(mean(macs_private))")
-        println("  MAC Social: min=$(minimum(macs_social)), max=$(maximum(macs_social)), mean=$(mean(macs_social))")
-    end
-end
-
 # Plotting
 using Plots
 function plot_mac_comparison(results_extended_analysis, mac_extended)
@@ -387,89 +374,6 @@ end
 # Generate plot
 p_mac_comparison = plot_mac_comparison(results_extended_analysis, mac_extended)
 
-# plot private and social MAC combined
-function plot_mac_combined(results_extended_analysis, mac_extended)
-    solutions = results_extended_analysis.solutions
-    statusquo_emission = solutions[:statusquo].emissions.total
-
-    max_abatement = 0.1  # Billion tons
-
-    p = plot(size=(1000, 700),
-        title="Marginal Abatement Cost Curves",
-        xlabel="Cumulative Abatement (Billion tons CO2)",
-        ylabel="MAC (\$/ton CO2)",
-        legend=:topleft,
-        xlims=(0, max_abatement),
-        ylims=(-500, 1700),
-        left_margin=5Plots.mm,
-        bottom_margin=8Plots.mm)  # 아래 여백 증가
-
-    policy_info = Dict(
-        :carbontax => (label="Carbon Tax", color=:blue),
-        :rfs => (label="RFS Aviation", color=:red),
-        :lcfs => (label="LCFS", color=:green),
-        :taxcredit => (label="Tax Credit", color=:purple)
-    )
-
-    for policy_type in [:carbontax, :rfs, :lcfs, :taxcredit]
-        mac_data = mac_extended[policy_type]
-
-        if isempty(mac_data)
-            continue
-        end
-
-        abatement_values = Float64[]
-        mac_private_values = Float64[]
-        mac_social_values = Float64[]
-
-        for d in mac_data
-            abatement = statusquo_emission - d.emission
-            if abatement <= max_abatement
-                push!(abatement_values, abatement)
-                push!(mac_private_values, d.mac_private)
-                push!(mac_social_values, d.mac_social)
-            end
-        end
-
-        if isempty(abatement_values)
-            continue
-        end
-
-        sorted_indices = sortperm(abatement_values)
-        abatement_sorted = abatement_values[sorted_indices]
-        mac_private_sorted = mac_private_values[sorted_indices]
-        mac_social_sorted = mac_social_values[sorted_indices]
-
-        info = policy_info[policy_type]
-
-        # Private MAC - 실선
-        plot!(p, abatement_sorted, mac_private_sorted,
-            label=info.label,  # 정책명만
-            linewidth=2.5,
-            linestyle=:solid,
-            color=info.color)
-
-        # Social MAC - 점선
-        plot!(p, abatement_sorted, mac_social_sorted,
-            label="",  # label 없음
-            linewidth=2.5,
-            linestyle=:dash,
-            color=info.color)
-    end
-
-    # Add zero line
-    hline!(p, [0], color=:gray, linestyle=:dot, label="", alpha=0.5)
-
-    # Add note at the bottom
-    annotate!(p, 0.15, -400,
-        text("Note: Solid lines = Private MAC, Dashed lines = Social MAC",
-            :center, 9, :gray))
-
-    return p
-end
-
-# Generate plot
-p_mac_combined = plot_mac_combined(results_extended_analysis, mac_extended)
 
 
 # =====================
@@ -900,9 +804,6 @@ end
 p_food = plot_food_production(results_extended_analysis)
 display(p_food)
 savefig(p_food, "food_production_by_policy.png")
-
-
-
 
 # 결과 저장
 @save "extended_policy_results.jld2" all_results all_solutions results_df

@@ -8,17 +8,11 @@ import .SAFModel: params, build_unified_model, extract_solution
 using JLD2
 using JuMP
 
-println("\n" * "="^130)
-println("EQUIVALENT EMISSIONS ANALYSIS")
-println("Finding policy stringencies that achieve same total emissions as RFS (3B target)")
-println("="^130)
-
 # =================================================================================
 # 1. Load Target SAF Results (3B target analysis)
 # =================================================================================
 
 @load "results_target.jld2" equivalent_policies equivalent_solutions target_saf policy_configs_target
-println("✓ Loaded target SAF results (3B target)")
 
 # =================================================================================
 # 2. Calculate Target Emissions from RFS (3B target)
@@ -53,9 +47,9 @@ function find_policy_for_target_emissions(target_emission, params, policy_type;
 
     # Define search ranges - wider than SAF target search
     search_ranges = Dict(
-        :carbontax => (0.0, 2000.0, :t),
-        :rfs => (0.0, 1.0, :θ_avi),
-        :lcfs => (0.0, 1.0, :σ),
+        :carbontax => (0.0, 300.0, :t),
+        :rfs => (0.0, 0.5, :θ_avi),
+        :lcfs => (0.0, 0.5, :σ),
         :taxcredit => (0.0, 500.0, :p)
     )
 
@@ -93,7 +87,7 @@ function find_policy_for_target_emissions(target_emission, params, policy_type;
         total_em = emissions.total
 
         println("  Iteration $iteration: $param_name = $(round(mid, digits=4)), " *
-                "Emissions = $(round(total_em * 1000, digits=3)) MMT CO2e")
+                "Emissions = $(round(total_em, digits=3)) Billion ton CO2e")
 
         # Check convergence
         if abs(total_em - target_emission) < tolerance
@@ -140,7 +134,7 @@ end
 policy_types = [:carbontax, :rfs, :lcfs, :taxcredit]
 
 println("\n" * "="^130)
-println("FINDING POLICY STRINGENCIES FOR TARGET EMISSIONS = $(round(target_total_emission * 1000, digits=3)) MMT CO2e")
+println("FINDING POLICY STRINGENCIES FOR TARGET EMISSIONS = $(round(target_total_emission, digits=3)) Billion ton CO2e")
 println("="^130)
 
 equivalent_emission_policies = Dict()
@@ -169,7 +163,6 @@ policy_configs_emission = NamedTuple(
 
 # Save results
 @save "results_equivalent_emissions.jld2" equivalent_emission_policies equivalent_emission_solutions target_total_emission policy_configs_emission
-println("\n✓ Equivalent emissions results saved to results_equivalent_emissions.jld2")
 
 # =================================================================================
 # 6. Print Summary
@@ -228,7 +221,7 @@ display_comparison_tables(
     params,
     policy_configs_emission;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="EQUIVALENT EMISSIONS POLICY COMPARISON (Target = $(round(target_total_emission * 1000, digits=3)) MMT CO2e)",
+    title="EQUIVALENT EMISSIONS POLICY COMPARISON (Target = $(round(target_total_emission, digits=3)) Billion ton CO2e)",
     show_policy_params=true,
     equivalent_policies=equivalent_emission_policies
 )
@@ -287,7 +280,7 @@ cs_changes_equiv_emission = calculate_cs_changes(
 display_cs_changes(
     cs_changes_equiv_emission;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="EQUIVALENT EMISSIONS: CONSUMER SURPLUS CHANGES (Target = $(round(target_total_emission * 1000, digits=3)) MMT CO2e, billion \$)"
+    title="EQUIVALENT EMISSIONS: CONSUMER SURPLUS CHANGES (Target = $(round(target_total_emission, digits=3)) Billion ton CO2e, billion \$)"
 )
 
 # 2. Land Producer Surplus Changes
@@ -342,7 +335,7 @@ display_environmental_benefits(
     env_benefits_equiv_emission,
     SCC;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="EQUIVALENT EMISSIONS: ENVIRONMENTAL BENEFITS (Target = $(round(target_total_emission * 1000, digits=3)) MMT CO2e)"
+    title="EQUIVALENT EMISSIONS: ENVIRONMENTAL BENEFITS (Target = $(round(target_total_emission, digits=3)) Billion ton CO2e)"
 )
 
 # 5. Total Welfare Summary
@@ -361,51 +354,29 @@ welfare_summary_equiv_emission = calculate_total_welfare(
 display_welfare_summary(
     welfare_summary_equiv_emission;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="EQUIVALENT EMISSIONS: WELFARE SUMMARY (Target = $(round(target_total_emission * 1000, digits=3)) MMT CO2e)"
+    title="EQUIVALENT EMISSIONS: WELFARE SUMMARY (Target = $(round(target_total_emission, digits=3)) Billion ton CO2e)"
 )
-
-# =================================================================================
-# 10. Create Welfare Comparison DataFrames
-# =================================================================================
-
-println("\n" * "="^130)
-println("WELFARE COMPARISON TABLES")
-println("="^130)
-
-policy_types = [:carbontax, :rfs, :lcfs, :taxcredit]
-
-# Welfare Components Comparison
-welfare_comparison_df = DataFrame(
-    Policy=String[],
-    CS_Change=Float64[],
-    PS_Land_Change=Float64[],
-    Gov_Revenue=Float64[],
-    Env_Benefit=Float64[],
-    Private_Surplus=Float64[],
-    Social_Welfare=Float64[]
-)
-
-for policy_type in policy_types
-    w = welfare_summary_equiv_emission[policy_type]
-
-    push!(welfare_comparison_df, (
-        String(policy_type),
-        w.cs_change,
-        w.ps_land_change,
-        w.gr_change,
-        w.env_benefit,
-        w.private_surplus,
-        w.social_welfare
-    ))
-end
-
-println("\n--- Welfare Components Comparison (billion \$) ---")
-show(welfare_comparison_df, allrows=true)
 
 # Detailed CS Breakdown
 cs_breakdown_df = make_cs_change_table(cs_changes_equiv_emission; scenarios=policy_types)
 println("\n--- Consumer Surplus Breakdown by Sector (billion \$) ---")
 show(cs_breakdown_df, allrows=true)
+
+# =================================================================================
+# Average Abatement Cost Calculation
+# =================================================================================
+aac_equiv_emission = calculate_average_abatement_cost(
+    welfare_summary_equiv_emission,
+    results_equiv_emission_analysis,
+    status_quo;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+)
+
+display_aac_analysis(
+    aac_equiv_emission;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+    title="EQUIVALENT EMISSIONS: AVERAGE ABATEMENT COST (Target = $(round(target_total_emission, digits=3)) Billion ton CO2e)"
+)
 
 # =================================================================================
 # 10. Create All Comparison DataFrames

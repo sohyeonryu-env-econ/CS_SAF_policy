@@ -381,8 +381,7 @@ params = (
 function build_unified_model(params, config)
 
     model = Model(PATHSolver.Optimizer)
-    #set_silent(model)
-
+    set_silent(model)
     # Unpack parameters
     coeff = params.coeff
     demand = params.demand

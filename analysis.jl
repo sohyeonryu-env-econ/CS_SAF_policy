@@ -495,7 +495,9 @@ function calculate_emissions_detail(solution, params)
     # Sector emissions (billion ton CO2e)
     avi_emission = sum(delta[g] * solution.q[g] for g in AVIATION_FUELS)
     road_emission = sum(delta[g] * solution.q[g] for g in ROAD_FUELS)
-    food_emission = sum(delta[g] * solution.x[g] for g in FOOD_GOODS)
+    corn_emissions = delta[:corn] * (solution.x[:corn] - solution.ddgs)  # Corn demand excluding DDGS
+    soy_emissions = delta[:soyoil] * solution.x[:soyoil]
+    food_emission = corn_emissions + soy_emissions
     total_emission = avi_emission + road_emission + food_emission
 
     # Detailed fuel-level emissions
@@ -504,7 +506,8 @@ function calculate_emissions_detail(solution, params)
     )
 
     food_emissions = Dict(
-        g => delta[g] * solution.x[g] for g in FOOD_GOODS
+        :corn => delta[:corn] * (solution.x[:corn] - solution.ddgs),
+        :soyoil => delta[:soyoil] * solution.x[:soyoil]
     )
 
     return (
@@ -539,7 +542,7 @@ function make_emissions_table(solutions, params; scenarios=nothing)
 
         avi_emission = sum(delta[g] * sol.q[g] for g in AVIATION_FUELS)
         road_emission = sum(delta[g] * sol.q[g] for g in ROAD_FUELS)
-        food_emission = sum(delta[g] * sol.x[g] for g in FOOD_GOODS)
+        food_emission = delta[:corn] * (sol.x[:corn] - sol.ddgs) + delta[:soyoil] * sol.x[:soyoil]
 
         push!(df, (
             String(scenario),
