@@ -505,7 +505,9 @@ end
 
 # run environmental benefit analysis
 # Social Cost of Carbon ($/ton CO2e)
-const SCC = 190.0  # EPA 2023 central estimate
+if !@isdefined(SCC)
+    const SCC = 190.0  # EPA 2023 central estimate
+end
 
 # Base scenarios
 env_benefits_base = calculate_environmental_benefit(

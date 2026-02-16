@@ -18,7 +18,7 @@ using JuMP;
 # Define policy stringency configuration
 policy_configs_base = (
     statusquo=(t=0.0, θ_avi=0.0, σ=0.0, p=0.0),
-    carbontax=(t=250.0, θ_avi=0.0, σ=0.0, p=0.0),
+    carbontax=(t=190.0, θ_avi=0.0, σ=0.0, p=0.0),
     rfs=(t=0.0, θ_avi=0.3, σ=0.0, p=0.0),
     lcfs=(t=0.0, θ_avi=0.0, σ=0.03, p=0.0),
     taxcredit=(t=0.0, θ_avi=0.0, σ=0.0, p=10.0)
@@ -114,32 +114,63 @@ function find_policy_for_target_saf(target_saf, params, policy_type; tolerance=0
     return (policy_value=mid, model=model, actual_saf=total_saf, config=config)
 end
 
+# Multiple Target
 # Run target SAF analysis
-target_saf = 3.0
+const TARGET_SAF_VALUES = [3.0, 5.0]
+
+#target_saf = 3.0
 policy_types = [:carbontax, :rfs, :lcfs, :taxcredit]
 
-println("\nFINDING POLICY STRINGENCY FOR TARGET SAF = $target_saf billion gallons")
+for target_saf in TARGET_SAF_VALUES
+    println("\n" * "="^80)
+    println("FINDING POLICY STRINGENCY FOR TARGET SAF = $target_saf billion gallons")
+    println("="^80)
 
-equivalent_policies = Dict()
-for policy_type in policy_types
-    println("\n--- Finding $policy_type ---")
-    result = find_policy_for_target_saf(target_saf, params, policy_type)
-    equivalent_policies[policy_type] = result
+    equivalent_policies = Dict()
+    for policy_type in policy_types
+        println("\n--- Finding $policy_type for $(target_saf)B SAF ---")
+        result = find_policy_for_target_saf(target_saf, params, policy_type)
+        equivalent_policies[policy_type] = result
+    end
+
+    # Extract solutions
+    equivalent_solutions = Dict(
+        policy_type => extract_solution(result.model, policy_type)
+        for (policy_type, result) in equivalent_policies
+    )
+
+    # Extract policy configs
+    policy_configs_target = NamedTuple(
+        policy_type => result.config
+        for (policy_type, result) in equivalent_policies
+    )
+
+    # Determine output suffix
+    suffix = target_saf == 3.0 ? "" : "_$(Int(target_saf))"
+
+    # Save with appropriate naming
+    if target_saf == 3.0
+        @save "results_target.jld2" equivalent_policies equivalent_solutions target_saf policy_configs_target
+        println("\n✓ Target SAF (3B) results saved to results_target.jld2")
+    else
+        # 변수명에 suffix 추가
+        target_saf_var = target_saf
+        equivalent_policies_var = equivalent_policies
+        equivalent_solutions_var = equivalent_solutions
+        policy_configs_target_var = policy_configs_target
+
+        if target_saf == 5.0
+            @save "results_target_5.jld2" equivalent_policies_5 = equivalent_policies equivalent_solutions_5 = equivalent_solutions target_saf_5 = target_saf policy_configs_target_5 = policy_configs_target
+            println("\n✓ Target SAF (5B) results saved to results_target_5.jld2")
+        else
+            filename = "results_target_$(Int(target_saf)).jld2"
+            @save filename equivalent_policies equivalent_solutions target_saf policy_configs_target
+            println("\n✓ Target SAF ($(target_saf)B) results saved to $filename")
+        end
+    end
 end
 
-# Extract solutions
-equivalent_solutions = Dict(
-    policy_type => extract_solution(result.model, policy_type)
-    for (policy_type, result) in equivalent_policies
-)
-
-# Extract policy stringencies that make target SAF
-policy_configs_target = NamedTuple(
-    policy_type => result.config
-    for (policy_type, result) in equivalent_policies
-)
-
-# save
-@save "results_target.jld2" equivalent_policies equivalent_solutions target_saf policy_configs_target
-println("\n✓ Target SAF results saved to results_target_saf.jld2")
+println("\n" * "="^80)
+println("ALL TARGET SAF ANALYSES COMPLETED")
+println("="^80)
 

@@ -225,7 +225,6 @@ c1_vec = [
     0.0,   # 5. ethanol
     0.0,  # 6. diesel
     0.0     # 7. biodiesel_soy
-    #0.0      # 8. biodiesel_nonsoy
 ]
 
 c2_vec = [
@@ -236,7 +235,6 @@ c2_vec = [
     50.0,  # 5. ethanol
     50.0,  # 6. diesel
     10.0  # 7. biodiesel_soy
-    #50.0   # 8. biodiesel_nonsoy
 ]
 
 v_vec = [
@@ -247,7 +245,6 @@ v_vec = [
     18.01,    # 5. ethanol
     64.68,    # 6. diesel
     5.0    # 7. biodiesel_soy
-    #5.0       # 8. biodiesel_nonsoy
 ]
 
 # Create mapping for fuel cost parameters
@@ -259,7 +256,6 @@ fuel_goods_cost_map = [
     :ethanol,
     :diesel,
     :biodiesel_shared # Used for both biodiesel_soy and biodiesel_nonsoy
-    #:biodiesel_nonsoy
 ]
 
 fuel_cost = Dict()
@@ -348,7 +344,6 @@ meta = Dict(
         :rfs => "RFS",
         :lcfs => "LCFS",
         :tax_credit => "Tax credit",
-        #:obs2024 => "2024 observed"
     )
 )
 
