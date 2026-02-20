@@ -1,10 +1,6 @@
 # run_model.jl
-include(joinpath(@__DIR__, "SAFModel.jl")) # load SAFModel.jl from the same directory
-cd(@__DIR__)                               # Set working directory to the script's directory
-println("Working directory: ", pwd())
-
-using .SAFModel;
-import .SAFModel: params, run_scenario, extract_solution, is_solved_and_feasible;
+include(joinpath(@__DIR__, "SAFModel.jl"))
+using .SAFModel
 import Pkg;
 Pkg.add("JLD2");
 using JLD2;

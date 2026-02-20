@@ -404,9 +404,9 @@ gr_changes_equivalent = calculate_gr_changes(
 )
 
 display_gr_changes(
-    gr_changes_equivalent;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="EQUIVALENT SCENARIOS: GOVERNMENT REVENUE CHANGES"
+    gr_changes_target;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],  # ⭐ 순서 지정
+    title="TARGET SCENARIOS: GOVERNMENT REVENUE CHANGES"
 )
 
 # =================================================================================
@@ -635,9 +635,9 @@ display_welfare_summary(
 
 # Equivalent/Target scenarios
 welfare_summary_equivalent = calculate_total_welfare(
-    cs_changes_equivalent,
-    ps_land_equivalent,
-    gr_changes_equivalent,
+    cs_changes_target,
+    ps_land_equivalent,  # ⭐ 수정
+    gr_changes_target,
     env_benefits_equivalent;
     scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
 )
@@ -648,26 +648,131 @@ display_welfare_summary(
     title="EQUIVALENT SCENARIOS: WELFARE SUMMARY (Target SAF = $(target_saf) billion gallons)"
 )
 
-# =============================================================
-# 3. AVERAGE ABATEMENT COST CALCULATION
-# =============================================================
+println("\n" * "="^80)
+println("TOTAL WELFARE ANALYSIS COMPLETE")
+println("="^80)
+
+
+
 
 """
-Calculate average abatement cost (AAC)
-AAC measures the cost per unit of emission reduction
+Calculate scarcity rents from binding common constraints
+"""
+function calc_scarcity_rents(fuel, result, params)
+    duals = result.duals
+    scarcity_rent = 0.0
 
-AAC_private = -ΔPrivate Surplus / ΔEmissions
-AAC_social = -ΔSocial Welfare / ΔEmissions
+    theta = 0.125  # RFS D6 mandate share
 
-where:
-- ΔPrivate Surplus = CS Change + PS Change + Gov Revenue
-- ΔSocial Welfare = Private Surplus + Environmental Benefit
-- ΔEmissions = Emissions_SQ - Emissions_Policy (positive for reduction)
+    # =========================================================================
+    # 1. Road RFS D6
+    # =========================================================================
+    if fuel == :gasoline || fuel == :diesel
+        scarcity_rent += duals.λ_rfs * theta
+    elseif fuel == :ethanol
+        scarcity_rent += duals.λ_rfs * (-1.0)
+    elseif fuel == :biodiesel_soy || fuel == :biodiesel_nonsoy
+        scarcity_rent += duals.λ_rfs * (-1.5)
+    elseif fuel == :rd_soy || fuel == :rd_nonsoy
+        scarcity_rent += duals.λ_rfs * (-1.7)
+    end
 
-Units:
-- Welfare changes: billion \$
-- Emission changes: billion ton CO2e
-- AAC: \$ per ton CO2e
+    # =========================================================================
+    # 2. Blend Wall - Ethanol
+    # =========================================================================
+    if fuel == :gasoline
+        scarcity_rent += duals.λ_blendwall_ethanol * (-0.1)
+    elseif fuel == :ethanol
+        scarcity_rent += duals.λ_blendwall_ethanol * 0.9
+    end
+
+    # =========================================================================
+    # 3. Blend Wall - Biodiesel
+    # =========================================================================
+    if fuel == :diesel
+        scarcity_rent += duals.λ_blendwall_biodiesel * (-0.05)
+    elseif fuel == :biodiesel_soy || fuel == :biodiesel_nonsoy
+        scarcity_rent += duals.λ_blendwall_biodiesel * 0.95
+    end
+
+    # =========================================================================
+    # 4. Non-soy Capacity
+    # =========================================================================
+    if fuel in [:saf_hefa_nonsoy, :biodiesel_nonsoy, :rd_nonsoy]
+        alpha = params.coeff.alpha
+
+        if fuel == :saf_hefa_nonsoy
+            scarcity_rent += duals.λ_nonsoy_capacity * alpha[:saf_hefa_nonsoy]
+        elseif fuel == :biodiesel_nonsoy
+            scarcity_rent += duals.λ_nonsoy_capacity * alpha[:biodiesel_nonsoy]
+        elseif fuel == :rd_nonsoy
+            scarcity_rent += duals.λ_nonsoy_capacity * alpha[:rd_nonsoy]
+        end
+    end
+
+    return scarcity_rent
+end
+
+"""
+Calculate producer net price (should equal c0)
+"""
+function calc_producer_net_price(fuel, result, params)
+    r = params.coeff.r
+    beta = params.coeff.beta
+
+    # Energy-adjusted consumer price
+    price_per_unit = if fuel == :jet_fuel
+        r[:jet_fuel] * result.p_c[:avi]
+    elseif fuel in [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+        r[:jet_fuel] * beta[(:saf, :jet_fuel)] * result.p_c[:avi]
+    elseif fuel == :gasoline
+        r[:gasoline] * result.p_c[:gas]
+    elseif fuel == :ethanol
+        r[:gasoline] * beta[(:ethanol, :gasoline)] * result.p_c[:gas]
+    elseif fuel == :diesel
+        r[:diesel] * result.p_c[:die]
+    elseif fuel in [:biodiesel_soy, :biodiesel_nonsoy]
+        r[:diesel] * beta[(:biodiesel, :diesel)] * result.p_c[:die]
+    elseif fuel in [:rd_soy, :rd_nonsoy]
+        r[:diesel] * beta[(:rd, :diesel)] * result.p_c[:die]
+    else
+        0.0
+    end
+
+    # Policy-specific implicit tax
+    implicit_taxes = get(result, :implicit_taxes, Dict())
+    implicit_tax = get(get(implicit_taxes, fuel, Dict()), :total, 0.0)
+
+    # Common constraint scarcity rents
+    scarcity_rent = calc_scarcity_rents(fuel, result, params)
+
+    # Non-soy feedstock cost (exogenous price)
+    feedstock_cost = 0.0
+    if fuel in [:saf_hefa_nonsoy, :biodiesel_nonsoy, :rd_nonsoy]
+        alpha = params.coeff.alpha
+        nonsoy_feedstock_price = 0.48  # $/lb (exogenous)
+
+        if fuel == :saf_hefa_nonsoy
+            feedstock_cost = alpha[:saf_hefa_nonsoy] * nonsoy_feedstock_price
+        elseif fuel == :biodiesel_nonsoy
+            feedstock_cost = alpha[:biodiesel_nonsoy] * nonsoy_feedstock_price
+        elseif fuel == :rd_nonsoy
+            feedstock_cost = alpha[:rd_nonsoy] * nonsoy_feedstock_price
+        end
+    end
+
+    # ⭐ HEFA SAF premium (only for SAF HEFA)
+    hefa_saf_premium = 0.0
+    if fuel == :saf_hefa_nonsoy
+        hefa_saf_premium = 0.08  # $/gallon (correct value!)
+    end
+
+    # Producer net price (should equal c0)
+    return price_per_unit - implicit_tax - scarcity_rent - feedstock_cost - hefa_saf_premium
+end
+
+"""
+Calculate producer surplus for a single fuel
 """
 function calculate_average_abatement_cost(welfare_summary, solutions, solution_sq; scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(welfare_summary)) : scenarios
