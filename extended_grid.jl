@@ -1,36 +1,23 @@
+# extended_grid.jl
+cd(@__DIR__)
+println("Working directory: ", pwd())
+
 include(joinpath(@__DIR__, "SAFModel.jl"))
-include(joinpath(@__DIR__, "analysis.jl"))  # ⭐ implicit tax, emissions
-include(joinpath(@__DIR__, "welfare.jl"))   # ⭐ welfare
+include(joinpath(@__DIR__, "analysis.jl"))  # implicit tax, emissions
+include(joinpath(@__DIR__, "welfare.jl"))   # welfare
 import .SAFModel: params, build_unified_model, extract_solution,
     FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
 using JLD2
 using DataFrames
 using Printf
 using Plots
-
-cd(@__DIR__)
-println("Working directory: ", pwd())
+using JuMP
 
 # =================================================================================
-# LOAD STATUS QUO FROM COMPLETE BASE ANALYSIS
+# 1. Load Status Quo from Base Analysis
 # =================================================================================
-println("\n" * "="^80)
-println("LOADING STATUS QUO FROM BASE ANALYSIS")
-println("="^80)
 
 @load "results_base_complete.jld2" status_quo
-println("✓ Loaded status quo from results_base_complete.jld2")
-
-# Validate status quo
-println("\nStatus quo validation:")
-println("  Has q (quantities): ", haskey(status_quo, :q))
-println("  Has x (demand): ", haskey(status_quo, :x))
-println("  Has emissions: ", haskey(status_quo, :emissions))
-println("  Has duals: ", haskey(status_quo, :duals))
-
-if !haskey(status_quo, :emissions)
-    error("❌ Status quo missing emissions! Please run analysis.jl and welfare.jl first.")
-end
 
 println("\nStatus quo emissions (billion ton CO2e):")
 println("  Aviation: ", status_quo.emissions.aviation)
@@ -38,46 +25,47 @@ println("  Road: ", status_quo.emissions.road)
 println("  Food: ", status_quo.emissions.food)
 println("  Total: ", status_quo.emissions.total)
 
-println("="^80)
-
 # =================================================================================
-# 5. Extended Policy Parameter Grid
+# 2. Extended Policy Parameter Grid
 # =================================================================================
 
+# =====================
+# 1) Define and solve extended policy grid scenarios
+# =====================
 # Define policy grid
+
 const POLICY_RANGES = (
-    t=0:75:1500,           # Carbon tax: 0, 10, 20, ..., 400
-    θ_avi=0:0.05:1.0,     # RFS aviation: 0, 0.05, 0.1, ..., 0.5
-    σ=0.0:0.05:1.0,      # LCFS: 1.0, 0.99, 0.98, ..., 0.5
-    p=0:22:450             # Tax credit: 0, 1, 2, ..., 100
+    t=0:0.912:456,
+    θ_avi=0:0.001:0.9,
+    σ=0.0:0.00027:0.5,
+    p=0:0.052:50.0
 )
 
-# Create policy scenarios based on which parameter varies
 function create_policy_scenarios()
     scenarios = Dict()
 
     # 1. Carbon tax scenarios (varying t)
     for t in POLICY_RANGES.t
-        scenarios[Symbol("carbontax_$(Int(t))")] = (t=Float64(t), θ_avi=0.0, σ=0.0, p=0.0)
+        t_int = round(Int, t)
+        scenarios[Symbol("carbontax_$t_int")] = (t=Float64(t), θ_avi=0.0, σ=0.0, p=0.0)
     end
 
     # 2. RFS aviation scenarios (varying θ_avi)
     for θ in POLICY_RANGES.θ_avi
-        # Use round to avoid floating point precision issues
-        θ_int = round(Int, θ * 100)
+        θ_int = round(Int, θ * 1000)
         scenarios[Symbol("rfs_$θ_int")] = (t=0.0, θ_avi=Float64(θ), σ=0.0, p=0.0)
     end
 
     # 3. LCFS scenarios (varying σ)
     for σ in POLICY_RANGES.σ
-        # Use round to avoid floating point precision issues
-        σ_int = round(Int, σ * 100)
+        σ_int = round(Int, σ * 1000)
         scenarios[Symbol("lcfs_$σ_int")] = (t=0.0, θ_avi=0.0, σ=Float64(σ), p=0.0)
     end
 
     # 4. Tax credit scenarios (varying p)
     for p in POLICY_RANGES.p
-        scenarios[Symbol("taxcredit_$(Int(p))")] = (t=0.0, θ_avi=0.0, σ=0.0, p=Float64(p))
+        p_int = round(Int, p * 100)
+        scenarios[Symbol("taxcredit_$p_int")] = (t=0.0, θ_avi=0.0, σ=0.0, p=Float64(p))
     end
 
     # Add status quo
@@ -87,68 +75,62 @@ end
 
 const EXTENDED_POLICY_MATRIX = create_policy_scenarios()
 
-# =====================
 # Run the extended grid scenarios
-# =====================
-
 function run_extended_analysis(params, policy_configs; verbose=true)
     results = Dict()
     solutions = Dict()
     total_scenarios = length(policy_configs)
     current = 0
+    solved_count = 0
+    failed_count = 0
 
     for (scenario_name, config) in policy_configs
         current += 1
-        if verbose
-            println("\n[$current/$total_scenarios] Running $scenario_name...")
-        end
-
         try
             model = build_unified_model(params, config)
             optimize!(model)
-
             if is_solved_and_feasible(model)
                 results[scenario_name] = model
-
-                # Extract base solution
                 sol = extract_solution(model, scenario_name)
-
-                # ⭐ analysis.jl의 함수 사용해서 emissions 추가
                 emissions = calculate_emissions_detail(sol, params)
                 sol = merge(sol, (emissions=emissions,))
-
-                # ⭐ analysis.jl의 함수 사용해서 implicit_taxes 추가 (statusquo 제외)
                 if scenario_name != :statusquo
                     implicit_taxes = calculate_implicit_taxes(sol, params, config)
                     sol = merge(sol, (implicit_taxes=implicit_taxes,))
                 end
-
                 solutions[scenario_name] = sol
-
-                if verbose
-                    println("  ✓ Solved successfully")
-                end
+                solved_count += 1
             else
                 if verbose
-                    println("  ✗ Failed to solve")
+                    println("  ✗ [$current/$total_scenarios] $scenario_name: Failed to solve")
                 end
                 results[scenario_name] = nothing
                 solutions[scenario_name] = nothing
+                failed_count += 1
             end
         catch e
             if verbose
-                println("  ✗ Error: $e")
+                println("  ✗ [$current/$total_scenarios] $scenario_name: Error - $e")
             end
             results[scenario_name] = nothing
             solutions[scenario_name] = nothing
+            failed_count += 1
         end
+    end
+
+    # 최종 요약만 출력
+    if verbose
+        println("\n=== Extended Analysis Summary ===")
+        @printf("  Solved: %d / %d\n", solved_count, total_scenarios)
+        @printf("  Failed: %d / %d\n", failed_count, total_scenarios)
     end
 
     return results, solutions
 end
 
+
 # =====================
-# Calculate full welfare analysis for extended grid
+# 2) Calculate full welfare analysis for extended grid
 # =====================
 
 function calculate_extended_welfare_analysis(solutions, policy_configs, params; scc=190.0)
@@ -167,7 +149,7 @@ function calculate_extended_welfare_analysis(solutions, policy_configs, params; 
     lcfs_scenarios = [k for k in keys(valid_solutions) if startswith(String(k), "lcfs_")]
     taxcredit_scenarios = [k for k in keys(valid_solutions) if startswith(String(k), "taxcredit_")]
 
-    # ⭐ welfare.jl의 함수들 사용 (모두 solution.emissions 필요)
+    # use functions from welfare.jl
     println("Calculating consumer surplus changes...")
     cs_changes = calculate_cs_changes(valid_solutions, status_quo, params)
 
@@ -201,26 +183,24 @@ function calculate_extended_welfare_analysis(solutions, policy_configs, params; 
 end
 
 # =====================
-# RUN EXTENDED ANALYSIS
+# 3) RUN EXTENDED ANALYSIS
 # =====================
-println("\n" * "="^80)
-println("RUNNING EXTENDED POLICY GRID ANALYSIS")
-println("="^80)
 
-all_results, all_solutions = run_extended_analysis(params, EXTENDED_POLICY_MATRIX, verbose=true)
+# solve
+all_results, all_solutions = run_extended_analysis(params, EXTENDED_POLICY_MATRIX, verbose=true);
 
-println("\n" * "="^80)
-println("CALCULATING WELFARE ANALYSIS FOR EXTENDED GRID")
-println("="^80)
-
+# welfare
 results_extended_analysis = calculate_extended_welfare_analysis(
     all_solutions,
     EXTENDED_POLICY_MATRIX,
     params,
     scc=190.0
-)
+);
 
-
+# =================================================================================
+# 3. MARGINAL ABATEMENT COST CALCULATION FOR EXTENDED GRID
+# =================================================================================
+# calculate
 function calculate_mac_extended(results_extended_analysis)
     welfare_summary = results_extended_analysis.welfare_summary
     solutions = results_extended_analysis.solutions
@@ -305,43 +285,107 @@ end
 # Run MAC calculation
 mac_extended = calculate_mac_extended(results_extended_analysis)
 
-# Display summary
-println("\n" * "="^80)
-println("MARGINAL ABATEMENT COST SUMMARY")
-println("="^80)
+# Plotting
+using Plots
+function plot_mac_comparison(results_extended_analysis, mac_extended; vlines_abatement=nothing)
+    solutions = results_extended_analysis.solutions
+    statusquo_emission = solutions[:statusquo].emissions.total
 
-using Statistics
-for (policy_type, mac_data) in pairs(mac_extended)
-    println("\n$(uppercase(String(policy_type))):")
-    println("  Number of grid points: $(length(mac_data))")
-    if !isempty(mac_data)
-        macs_private = [d.mac_private for d in mac_data]
-        macs_social = [d.mac_social for d in mac_data]
-        println("  MAC Private: min=$(minimum(macs_private)), max=$(maximum(macs_private)), mean=$(mean(macs_private))")
-        println("  MAC Social: min=$(minimum(macs_social)), max=$(maximum(macs_social)), mean=$(mean(macs_social))")
+    max_abatement = 0.15 # Billion tons
+
+    p = plot(layout=(1, 2), size=(1600, 600),
+        plot_title="Marginal Abatement Cost Curves Comparison",
+        left_margin=5Plots.mm, bottom_margin=5Plots.mm)
+
+    policy_info = Dict(
+        :carbontax => (label="Carbon Tax",  color=:blue,   marker=:circle),
+        :rfs       => (label="RFS Aviation", color=:red,    marker=:diamond),
+        :lcfs      => (label="LCFS",         color=:green,  marker=:square),
+        :taxcredit => (label="Tax Credit",   color=:purple, marker=:utriangle)
+    )
+
+    for policy_type in [:carbontax, :rfs, :lcfs, :taxcredit]
+        mac_data = mac_extended[policy_type]
+        if isempty(mac_data)
+            continue
+        end
+
+        abatement_values   = Float64[]
+        mac_private_values = Float64[]
+        mac_social_values  = Float64[]
+
+        data_iter = policy_type == :taxcredit ? mac_data[2:end] : mac_data
+
+        for d in data_iter
+            abatement = statusquo_emission - d.emission
+            if abatement <= max_abatement
+                push!(abatement_values,   abatement)
+                push!(mac_private_values, d.mac_private)
+                push!(mac_social_values,  d.mac_social)
+            end
+        end
+
+        if isempty(abatement_values)
+            continue
+        end
+
+        sorted_indices     = sortperm(abatement_values)
+        abatement_sorted   = abatement_values[sorted_indices]
+        mac_private_sorted = mac_private_values[sorted_indices]
+        mac_social_sorted  = mac_social_values[sorted_indices]
+
+        info = policy_info[policy_type]
+
+        plot!(p[1], abatement_sorted, mac_private_sorted,
+            label=info.label, linewidth=2.5, color=info.color,
+            xlabel="Cumulative Abatement (Billion tons CO2)",
+            ylabel="MAC (\$/ton CO2)", title="Private MAC",
+            legend=:topleft, xlims=(0, max_abatement), ylims=(-100, 1000))
+
+        plot!(p[2], abatement_sorted, mac_social_sorted,
+            label=info.label, linewidth=2.5, color=info.color,
+            xlabel="Cumulative Abatement (Billion tons CO2)",
+            ylabel="MAC (\$/ton CO2)", title="Social MAC",
+            legend=:topleft, xlims=(0, max_abatement), ylims=(-500, 1000))
     end
+
+    hline!(p[1], [0], color=:gray, linestyle=:dot, label="", alpha=0.5)
+    hline!(p[2], [0], color=:gray, linestyle=:dot, label="", alpha=0.5)
+
+    # ── 3B / 6B 세로선 추가 ──────────────────────────────────────────────
+    if !isnothing(vlines_abatement)
+        vline_colors = [:darkred, :darkblue]
+        for (j, (abatement_val, vlabel)) in enumerate(vlines_abatement)
+            c = vline_colors[min(j, length(vline_colors))]
+            vline!(p[1], [abatement_val], color=c, linestyle=:dash, linewidth=1.8, label="")
+            vline!(p[2], [abatement_val], color=c, linestyle=:dash, linewidth=1.8, label="")
+            annotate!(p[1], abatement_val, 650, text(vlabel, c, :center, 9))
+            annotate!(p[2], abatement_val, 460, text(vlabel, c, :center, 9))
+        end
+    end
+    # ─────────────────────────────────────────────────────────────────────
+
+    return p
 end
 
-using Plots
+# ── vlines_abatement 계산 ────────────────────────────────────────────────
+# RFS 기준 abatement (3B, 6B 모두 RFS emissions 기준으로 통일)
+statusquo_em = results_extended_analysis.solutions[:statusquo].emissions.total
 
+abatement_3B = statusquo_em - ep_3B[:rfs].actual_emission
+abatement_6B = statusquo_em - ep_6B[:rfs].actual_emission
 
+vlines_abatement = [(abatement_3B, "3B"), (abatement_6B, "6B")]
 
-
-# =====================
-# SAVE RESULTS
-# =====================
-println("\nSaving extended analysis results...")
-@save "results_extended_analysis.jld2" results_extended_analysis EXTENDED_POLICY_MATRIX
-
-println("\n✓ Extended analysis complete!")
-println("Results saved to: results_extended_analysis.jld2")
-
+# Generate plot
+p_mac_comparison = plot_mac_comparison(results_extended_analysis, mac_extended;
+    vlines_abatement=vlines_abatement)
 
 function plot_mac_comparison(results_extended_analysis, mac_extended)
     solutions = results_extended_analysis.solutions
     statusquo_emission = solutions[:statusquo].emissions.total
 
-    max_abatement = 0.3  # Billion tons
+    max_abatement = 0.04  # Billion tons
 
     p = plot(layout=(1, 2), size=(1600, 600),
         plot_title="Marginal Abatement Cost Curves Comparison",
@@ -365,7 +409,9 @@ function plot_mac_comparison(results_extended_analysis, mac_extended)
         mac_private_values = Float64[]
         mac_social_values = Float64[]
 
-        for d in mac_data
+        data_iter = policy_type == :taxcredit ? mac_data[2:end] : mac_data
+
+        for d in data_iter
             abatement = statusquo_emission - d.emission
             if abatement <= max_abatement
                 push!(abatement_values, abatement)
@@ -397,7 +443,7 @@ function plot_mac_comparison(results_extended_analysis, mac_extended)
             title="Private MAC",
             legend=:topleft,
             xlims=(0, max_abatement),
-            ylims=(-500, 2000))
+            ylims=(-100, 700))
 
         # Social MAC
         plot!(p[2], abatement_sorted, mac_social_sorted,
@@ -411,7 +457,7 @@ function plot_mac_comparison(results_extended_analysis, mac_extended)
             title="Social MAC",
             legend=:topleft,
             xlims=(0, max_abatement),
-            ylims=(-500, 2000))
+            ylims=(-500, 500))
     end
 
     # Add zero line
@@ -423,97 +469,7 @@ end
 
 # Generate plot
 p_mac_comparison = plot_mac_comparison(results_extended_analysis, mac_extended)
-display(p_mac_comparison)
 
-using Plots
-
-function plot_mac_combined(results_extended_analysis, mac_extended)
-    solutions = results_extended_analysis.solutions
-    statusquo_emission = solutions[:statusquo].emissions.total
-
-    max_abatement = 0.3  # Billion tons
-
-    p = plot(size=(1000, 700),
-        title="Marginal Abatement Cost Curves",
-        xlabel="Cumulative Abatement (Billion tons CO2)",
-        ylabel="MAC (\$/ton CO2)",
-        legend=:topleft,
-        xlims=(0, max_abatement),
-        ylims=(-500, 1700),
-        left_margin=5Plots.mm,
-        bottom_margin=8Plots.mm)  # 아래 여백 증가
-
-    policy_info = Dict(
-        :carbontax => (label="Carbon Tax", color=:blue),
-        :rfs => (label="RFS Aviation", color=:red),
-        :lcfs => (label="LCFS", color=:green),
-        :taxcredit => (label="Tax Credit", color=:purple)
-    )
-
-    for policy_type in [:carbontax, :rfs, :lcfs, :taxcredit]
-        mac_data = mac_extended[policy_type]
-
-        if isempty(mac_data)
-            continue
-        end
-
-        abatement_values = Float64[]
-        mac_private_values = Float64[]
-        mac_social_values = Float64[]
-
-        for d in mac_data
-            abatement = statusquo_emission - d.emission
-            if abatement <= max_abatement
-                push!(abatement_values, abatement)
-                push!(mac_private_values, d.mac_private)
-                push!(mac_social_values, d.mac_social)
-            end
-        end
-
-        if isempty(abatement_values)
-            continue
-        end
-
-        sorted_indices = sortperm(abatement_values)
-        abatement_sorted = abatement_values[sorted_indices]
-        mac_private_sorted = mac_private_values[sorted_indices]
-        mac_social_sorted = mac_social_values[sorted_indices]
-
-        info = policy_info[policy_type]
-
-        # Private MAC - 실선
-        plot!(p, abatement_sorted, mac_private_sorted,
-            label=info.label,  # 정책명만
-            linewidth=2.5,
-            linestyle=:solid,
-            color=info.color)
-
-        # Social MAC - 점선
-        plot!(p, abatement_sorted, mac_social_sorted,
-            label="",  # label 없음
-            linewidth=2.5,
-            linestyle=:dash,
-            color=info.color)
-    end
-
-    # Add zero line
-    hline!(p, [0], color=:gray, linestyle=:dot, label="", alpha=0.5)
-
-    # Add note at the bottom
-    annotate!(p, 0.15, -400,
-        text("Note: Solid lines = Private MAC, Dashed lines = Social MAC",
-            :center, 9, :gray))
-
-    return p
-end
-
-# Generate plot
-p_mac_combined = plot_mac_combined(results_extended_analysis, mac_extended)
-display(p_mac_combined)
-
-# Save plot
-savefig(p_mac_combined, "mac_combined.png")
-println("\nPlot saved as mac_combined.png")
 
 
 # =====================
@@ -640,19 +596,17 @@ end
 
 
 # Create comprehensive DataFrame
-println("\nCreating results DataFrame...")
 results_df = results_to_dataframe(results_extended_analysis, EXTENDED_POLICY_MATRIX)
 
 
-
 # Plot fuel production by policy grid
-function plot_fuel_production(results_df, fuel_config)
+function plot_fuel_production(results_df, fuel_config; vlines=nothing)
 
     policies = [
-        ("carbontax", :t, "Carbon Tax (\$ / ton CO2e)", "Carbon Tax Policy", false),
-        ("rfs", :θ_avi, "RFS Aviation Mandate (θ_avi)", "RFS Aviation Policy", false),
-        ("lcfs", :σ, "LCFS Standard (σ)", "LCFS Policy", true),
-        ("taxcredit", :p, "Tax Credit Rate (\$ / gallon)", "Tax Credit Policy", false)
+        ("carbontax", :t,     "Carbon Tax (\$ / ton CO2e)",    "Carbon Tax Policy",   false),
+        ("rfs",       :θ_avi, "RFS Aviation Mandate (θ_avi)",  "RFS Aviation Policy", false),
+        ("lcfs",      :σ,     "LCFS Standard (σ)",             "LCFS Policy",         true),
+        ("taxcredit", :p,     "Tax Credit Rate (\$ / gallon)", "Tax Credit Policy",   false)
     ]
 
     plots = []
@@ -664,70 +618,61 @@ function plot_fuel_production(results_df, fuel_config)
         x_min = minimum(df[!, xcol])
         x_max = maximum(df[!, xcol])
 
-        # Main fuel plot
         p_main = plot(
             xlabel="",
             ylabel="$(fuel_config.main_fuel_label)\n(billion gallons)",
             title=title,
-            titlefontsize=16,
-            titlefontweight=:bold,
-            legend=false,
-            grid=true,
+            titlefontsize=16, titlefontweight=:bold,
+            legend=false, grid=true,
             xlims=(x_min, x_max),
+            ylims=get(fuel_config, :main_fuel_ylims, :auto),
             xticks=:none,
-            bottom_margin=-1Plots.mm,
-            top_margin=10Plots.mm,
-            left_margin=12Plots.mm
+            bottom_margin=-1Plots.mm, top_margin=10Plots.mm, left_margin=12Plots.mm
         )
+        plot!(p_main, df[!, xcol], df[!, fuel_config.main_fuel], linewidth=2, color=:black)
 
-        plot!(p_main, df[!, xcol], df[!, fuel_config.main_fuel],
-            linewidth=2, marker=:circle, markersize=3, color=:black, markerstrokewidth=0
-        )
-
-        # Biofuel plot
         p_bio = plot(
             xlabel=xlabel,
             ylabel="$(fuel_config.biofuel_ylabel)\n(billion gallons)",
-            legend=false,
-            grid=true,
+            legend=false, grid=true,
             xlims=(x_min, x_max),
-            top_margin=-1Plots.mm,
-            bottom_margin=45Plots.mm,
-            left_margin=12Plots.mm,
-            guidefontsize=11
+            top_margin=-1Plots.mm, bottom_margin=45Plots.mm,
+            left_margin=12Plots.mm, guidefontsize=11
         )
-
         for (col, label, color) in fuel_config.biofuel_types
-            plot!(p_bio, df[!, xcol], df[!, col],
-                linewidth=2, marker=:circle, markersize=3, color=color, markerstrokewidth=0
-            )
+            plot!(p_bio, df[!, xcol], df[!, col], linewidth=2, color=color)
         end
 
-        p_combined = plot(p_main, p_bio,
-            layout=grid(2, 1, heights=[0.4, 0.6]),
-            link=:x
-        )
+        if !isnothing(vlines) && haskey(vlines, Symbol(policy_type))
+            vline_colors = [:darkred, :darkblue]
+            for (j, (xval, vlabel)) in enumerate(vlines[Symbol(policy_type)])
+                c = vline_colors[min(j, length(vline_colors))]
+                vline!(p_main, [xval], color=c, linestyle=:dash, linewidth=1.8, label="")
+                vline!(p_bio,  [xval], color=c, linestyle=:dash, linewidth=1.8, label="")
+            end
+            # annotate는 p_main ylims 확정 후 별도 처리
+            cur_ylims = get(fuel_config, :main_fuel_ylims, nothing)
+            if !isnothing(cur_ylims)
+                for (j, (xval, vlabel)) in enumerate(vlines[Symbol(policy_type)])
+                    c = vline_colors[min(j, length(vline_colors))]
+                    annotate!(p_main, xval, cur_ylims[2] * 0.95, text(vlabel, c, :center, 9))
+                end
+            end
+        end
 
+        p_combined = plot(p_main, p_bio, layout=grid(2, 1, heights=[0.4, 0.6]), link=:x)
         push!(plots, p_combined)
     end
 
-    # Legend
     p_legend = plot(
-        legend=:top,
-        legendcolumns=fuel_config.legendcolumns,
+        legend=:top, legendcolumns=fuel_config.legendcolumns,
         grid=false, showaxis=false, ticks=false,
-        xlims=(0, 1), ylims=(0, 1),
-        framestyle=:none,
-        legendfontsize=10,
-        size=(2200, 80)
+        xlims=(0, 1), ylims=(0, 1), framestyle=:none,
+        legendfontsize=10, size=(2200, 80)
     )
-
-    plot!(p_legend, [NaN], [NaN],
-        label=fuel_config.main_fuel_label,
-        linewidth=2, color=:black, marker=:circle)
-
+    plot!(p_legend, [NaN], [NaN], label=fuel_config.main_fuel_label, linewidth=2, color=:black)
     for (col, label, color) in fuel_config.biofuel_types
-        plot!(p_legend, [NaN], [NaN], label=label, linewidth=2, color=color, marker=:circle)
+        plot!(p_legend, [NaN], [NaN], label=label, linewidth=2, color=color)
     end
 
     final_plot = plot(
@@ -736,8 +681,7 @@ function plot_fuel_production(results_df, fuel_config)
         layout=grid(2, 1, heights=[0.95, 0.05]),
         size=(2500, 1800),
         plot_title=fuel_config.plot_title,
-        plot_titlefontsize=22,
-        plot_titlefontweight=:bold,
+        plot_titlefontsize=22, plot_titlefontweight=:bold,
         margin=10Plots.mm
     )
 
@@ -747,23 +691,29 @@ end
 # =====================
 # Run and Plot the extended grid results
 # =====================
-#println("\nRunning extended policy analysis...")
-#all_results, all_solutions = run_all_scenarios(params, verbose=true)
+@load "results_equivalent_emissions.jld2" equivalent_emission_policies
+ep_3B = equivalent_emission_policies
 
-#results_df = solutions_to_dataframe(all_solutions, params)
+@load "results_equivalent_emissions_6.jld2" equivalent_emission_policies
+ep_6B = equivalent_emission_policies
 
-println("\nGenerating figures...")
+vlines_data = Dict(
+    :carbontax => [(ep_3B[:carbontax].policy_value, "3B"), (ep_6B[:carbontax].policy_value, "6B")],
+    :rfs       => [(ep_3B[:rfs].policy_value,       "3B"), (ep_6B[:rfs].policy_value,       "6B")],
+    :lcfs      => [(ep_3B[:lcfs].policy_value,      "3B"), (ep_6B[:lcfs].policy_value,      "6B")],
+    :taxcredit => [(ep_3B[:taxcredit].policy_value, "3B"), (ep_6B[:taxcredit].policy_value, "6B")],
+)
 
 # Aviation Fuel
 aviation_config = (
     main_fuel=:q_jet_fuel,
     main_fuel_label="Jet Fuel",
     biofuel_types=[
-        (:q_saf_atj_conv, "Conventional ATJ-SAF", :blue),
-        (:q_saf_atj_cs, "Climate-Smart ATJ-SAF", :red),
-        (:q_saf_hefa_conv, "Conventional HEFA-SAF", :green),
-        (:q_saf_hefa_cs, "Climate-Smart HEFA-SAF", :orange),
-        (:q_saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple)
+        (:q_saf_atj_conv,   "Conventional ATJ-SAF",    :blue),
+        (:q_saf_atj_cs,     "Climate-Smart ATJ-SAF",   :red),
+        (:q_saf_hefa_conv,  "Conventional HEFA-SAF",   :green),
+        (:q_saf_hefa_cs,    "Climate-Smart HEFA-SAF",  :orange),
+        (:q_saf_hefa_nonsoy,"Non-soy HEFA-SAF",        :purple)
     ],
     biofuel_ylabel="SAF Production",
     plot_title="Aviation Fuel Production by Policy Stringency",
@@ -771,7 +721,7 @@ aviation_config = (
     legendcolumns=6
 )
 
-aviation_plot = plot_fuel_production(results_df, aviation_config)
+aviation_plot = plot_fuel_production(results_df, aviation_config; vlines=vlines_data)
 #savefig(aviation_plot, aviation_config.filename)
 #display(aviation_plot)
 
@@ -788,7 +738,7 @@ gasoline_config = (
     legendcolumns=2
 )
 
-gasoline_plot = plot_fuel_production(results_df, gasoline_config)
+gasoline_plot = plot_fuel_production(results_df, gasoline_config; vlines=vlines_data)
 #savefig(gasoline_plot, gasoline_config.filename)
 #display(gasoline_plot)
 
@@ -796,11 +746,12 @@ gasoline_plot = plot_fuel_production(results_df, gasoline_config)
 diesel_config = (
     main_fuel=:q_diesel,
     main_fuel_label="Diesel",
+    main_fuel_ylims=(43.2, 45),
     biofuel_types=[
-        (:q_rd_soy, "Soy Renewable Diesel", :red),
-        (:q_rd_nonsoy, "Non-soy Renewable Diesel", :orange),
-        (:q_biodiesel_soy, "Soy Biodiesel", :blue),
-        (:q_biodiesel_nonsoy, "Non-soy Biodiesel", :purple)
+        (:q_rd_soy,        "Soy Renewable Diesel",     :red),
+        (:q_rd_nonsoy,     "Non-soy Renewable Diesel", :green),
+        (:q_biodiesel_soy, "Soy Biodiesel",            :blue),
+        (:q_biodiesel_nonsoy, "Non-soy Biodiesel",     :purple)
     ],
     biofuel_ylabel="Renewable Diesel & Biodiesel",
     plot_title="Diesel Fuel Production by Policy Stringency",
@@ -808,149 +759,260 @@ diesel_config = (
     legendcolumns=5
 )
 
-diesel_plot = plot_fuel_production(results_df, diesel_config)
-#savefig(diesel_plot, diesel_config.filename)
-#display(diesel_plot)
+diesel_plot = plot_fuel_production(results_df, diesel_config; vlines=vlines_data)
+function plot_food_production(results_extended_analysis; vlines=nothing)
+    solutions = results_extended_analysis.solutions
+    scenario_groups = results_extended_analysis.scenario_groups
 
-#println("\nFigures saved!")
+    policies = [
+        (:carbontax, "Carbon Tax (\$/ton CO2)", "Carbon Tax Policy"),
+        (:rfs, "RFS Aviation Mandate (θ_avi)", "RFS Aviation Policy"),
+        (:lcfs, "LCFS Standard (σ)", "LCFS Policy"),
+        (:taxcredit, "Tax Credit (\$/gal)", "Tax Credit Policy")
+    ]
+
+    function get_policy_value(scenario::Symbol, policy_type::Symbol)
+        int_val = parse(Int, split(String(scenario), "_")[2])
+        if policy_type == :carbontax
+            return Float64(int_val)
+        elseif policy_type in [:rfs, :lcfs]
+            return int_val / 1000.0
+        elseif policy_type == :taxcredit
+            return int_val / 100.0
+        end
+    end
+
+    corn_ylim    = (5, 8.6)
+    soy_oil_ylim = (10, 16)
+    soy_meal_ylim = (62, 67)
+
+    plots = []
+
+    for (policy_type, xlabel, title) in policies
+        scenario_list = scenario_groups[policy_type]
+        sorted_scenarios = sort(scenario_list, by=s -> parse(Int, split(String(s), "_")[2]))
+
+        x_vals         = [get_policy_value(s, policy_type) for s in sorted_scenarios]
+        total_corn_food = [solutions[s].x[:corn] for s in sorted_scenarios]
+        ddgs           = [0.092 * solutions[s].q[:ethanol] +
+                          0.159 * (solutions[s].q[:saf_atj_conv] + solutions[s].q[:saf_atj_cs])
+                          for s in sorted_scenarios]
+        corn_feedstock = total_corn_food .- ddgs
+        soy_oil        = [solutions[s].x[:soyoil]  for s in sorted_scenarios]
+        soy_meal       = [solutions[s].x[:soymeal] for s in sorted_scenarios]
+
+        # --- Corn Plot ---
+        p_corn = plot(
+            xlabel="", ylabel="Corn Supply\n(billion bushels)",
+            title=title, titlefontsize=14, titlefontweight=:bold,
+            legend=false, grid=true,
+            xlims=(x_vals[1], x_vals[end]), ylims=corn_ylim,
+            xticks=:none,
+            bottom_margin=-2Plots.mm, top_margin=8Plots.mm,
+            left_margin=18Plots.mm, right_margin=25Plots.mm
+        )
+        plot!(p_corn, x_vals, corn_feedstock, linewidth=2, color=:gold)
+        plot!(p_corn, x_vals, total_corn_food, linewidth=2, color=:darkorange)
+
+        # --- Soybean Plot ---
+        p_soy = plot(
+            xlabel=xlabel, ylabel="Soybean Oil\n(billion lbs)",
+            title="", legend=false, grid=true,
+            xlims=(x_vals[1], x_vals[end]), ylims=soy_oil_ylim,
+            top_margin=-2Plots.mm, bottom_margin=8Plots.mm,
+            left_margin=18Plots.mm, right_margin=25Plots.mm,
+            guidefontsize=10
+        )
+        plot!(p_soy, x_vals, soy_oil, linewidth=2, color=:darkgreen)
+
+        p_soy_twin = twinx(p_soy)
+        plot!(p_soy_twin, x_vals, soy_meal,
+            linewidth=2, color=:brown,
+            ylabel="Soybean Meal\n(million metric tons)",
+            legend=false, grid=false,
+            ylims=soy_meal_ylim, right_margin=25Plots.mm
+        )
+
+        # ── 세로선 추가 ───────────────────────────────────────────────────
+        if !isnothing(vlines) && haskey(vlines, policy_type)
+            vline_colors = [:darkred, :darkblue]
+            for (j, (xval, vlabel)) in enumerate(vlines[policy_type])
+                c = vline_colors[min(j, length(vline_colors))]
+                vline!(p_corn, [xval], color=c, linestyle=:dash, linewidth=1.8, label="")
+                vline!(p_soy,  [xval], color=c, linestyle=:dash, linewidth=1.8, label="")
+                annotate!(p_corn, xval, corn_ylim[2] * 0.95, text(vlabel, c, :center, 9))
+            end
+        end
+        # ─────────────────────────────────────────────────────────────────
+
+        p_combined = plot(p_corn, p_soy,
+            layout=grid(2, 1, heights=[0.5, 0.5]),
+            link=:x, size=(550, 800)
+        )
+        push!(plots, p_combined)
+    end
+
+    p_legend = plot(
+        legend=:top, legendcolumns=4,
+        grid=false, showaxis=false, ticks=false,
+        xlims=(0, 1), ylims=(0, 1), framestyle=:none,
+        legendfontsize=11, size=(2500, 80)
+    )
+    plot!(p_legend, [NaN], [NaN], label="Corn for food (Feedstock)", linewidth=2, color=:gold)
+    plot!(p_legend, [NaN], [NaN], label="Total Corn (+ DDGS)",       linewidth=2, color=:darkorange)
+    plot!(p_legend, [NaN], [NaN], label="Soybean Oil",               linewidth=2, color=:darkgreen)
+    plot!(p_legend, [NaN], [NaN], label="Soybean Meal",              linewidth=2, color=:brown)
+
+    final_plot = plot(
+        plot(plots..., layout=(2, 2)),
+        p_legend,
+        layout=grid(2, 1, heights=[0.95, 0.05]),
+        size=(2600, 1800),
+        plot_title="Food Production by Policy Stringency",
+        plot_titlefontsize=22, plot_titlefontweight=:bold,
+        margin=5Plots.mm
+    )
+
+    return final_plot
+end
+
+# 실행
+p_food = plot_food_production(results_extended_analysis; vlines=vlines_data)
+display(p_food)
+savefig(p_food, "food_production_by_policy.png")
 
 # 결과 저장
 @save "extended_policy_results.jld2" all_results all_solutions results_df
-println("\n✓ Extended policy results saved to extended_policy_results.jld2")
 
-
-function plot_welfare_summary_by_policy(results_extended_analysis)
+# welfare summary plot by policy type
+function plot_welfare_summary_by_policy(results_extended_analysis; vlines=nothing)
     welfare_summary = results_extended_analysis.welfare_summary
     scenario_groups = results_extended_analysis.scenario_groups
 
-    # Create 2x2 subplot
+    COLOR_CS   = :steelblue
+    COLOR_PS   = :orange
+    COLOR_GR   = :green
+    COLOR_PRIV = :purple
+    COLOR_SOC  = :red
+
     p = plot(layout=(2, 2), size=(1400, 1000),
         plot_title="Welfare Components by Policy Type",
         left_margin=5Plots.mm, bottom_margin=5Plots.mm)
 
     policy_info = Dict(
-        :carbontax => (label="Carbon Tax", xlabel="Tax (\$/ton CO2)"),
-        :rfs => (label="RFS Aviation", xlabel="Mandate Share"),
-        :lcfs => (label="LCFS", xlabel="Carbon Intensity Limit"),
-        :taxcredit => (label="Tax Credit", xlabel="Credit (\$/ton)")
+        :carbontax => (label="Carbon Tax",  xlabel="Tax (\$/ton CO2)"),
+        :rfs       => (label="RFS Aviation", xlabel="Mandate Share"),
+        :lcfs      => (label="LCFS",         xlabel="Carbon Intensity Limit"),
+        :taxcredit => (label="Tax Credit",   xlabel="Credit (\$/gal)")
     )
 
     for (idx, policy_type) in enumerate([:carbontax, :rfs, :lcfs, :taxcredit])
         scenario_list = scenario_groups[policy_type]
-
         if isempty(scenario_list)
             continue
         end
 
-        # Sort scenarios by policy intensity
-        sorted_scenarios = sort(scenario_list, by=s -> begin
-            parse(Int, split(String(s), "_")[2])
-        end)
+        sorted_scenarios = sort(scenario_list, by=s -> parse(Int, split(String(s), "_")[2]))
 
-        grid_values = Float64[]
-        cs_values = Float64[]
-        ps_values = Float64[]
+        grid_values           = Float64[]
+        cs_values             = Float64[]
+        ps_values             = Float64[]
+        gr_values             = Float64[]
         private_surplus_values = Float64[]
-        social_welfare_values = Float64[]
+        social_welfare_values  = Float64[]
 
         for scenario in sorted_scenarios
             if !haskey(welfare_summary, scenario)
                 continue
             end
 
-            # Extract grid value
-            scenario_str = String(scenario)
-            grid_val = parse(Int, split(scenario_str, "_")[2])
-
-            # Adjust for RFS and LCFS (they use 0-100 scale)
-            if policy_type in [:rfs, :lcfs]
-                push!(grid_values, Float64(grid_val) / 100.0)
-            else
-                push!(grid_values, Float64(grid_val))
+            config = EXTENDED_POLICY_MATRIX[scenario]
+            if policy_type == :carbontax
+                push!(grid_values, config.t)
+            elseif policy_type == :rfs
+                push!(grid_values, config.θ_avi)
+            elseif policy_type == :lcfs
+                push!(grid_values, config.σ)
+            elseif policy_type == :taxcredit
+                push!(grid_values, config.p)
             end
 
-            # Get welfare values
             welfare = welfare_summary[scenario]
-            push!(cs_values, welfare.cs_change)
-            push!(ps_values, welfare.ps_land_change)
+            push!(cs_values,              welfare.cs_change)
+            push!(ps_values,              welfare.ps_land_change)
+            push!(gr_values,              welfare.gr_change)
             push!(private_surplus_values, welfare.private_surplus)
-            push!(social_welfare_values, welfare.social_welfare)
+            push!(social_welfare_values,  welfare.social_welfare)
         end
 
         info = policy_info[policy_type]
 
-        # Plot CS
         plot!(p[idx], grid_values, cs_values,
-            label="CS Change",
-            marker=:circle,
-            linewidth=2,
-            xlabel=info.xlabel,
-            ylabel="Welfare Change (Million \$)",
-            title=info.label,
-            legend=:best)
+            label="CS Change", linewidth=2, color=COLOR_CS,
+            xlabel=info.xlabel, ylabel="Welfare Change (Billion \$)",
+            title=info.label, legend=:best)
 
-        # Plot PS
         plot!(p[idx], grid_values, ps_values,
-            label="PS Change",
-            marker=:diamond,
-            linewidth=2)
+            label="PS Change", linewidth=2, color=COLOR_PS)
 
-        # Plot Private Surplus
+        if policy_type in [:carbontax, :taxcredit]
+            plot!(p[idx], grid_values, gr_values,
+                label="Govt Revenue", linewidth=2, color=COLOR_GR)
+        end
+
         plot!(p[idx], grid_values, private_surplus_values,
-            label="Private Surplus",
-            marker=:square,
-            linewidth=3,
-            linestyle=:dash)
+            label="Private Surplus", linewidth=3, linestyle=:dot, color=COLOR_PRIV)
 
-        # Plot Social Welfare
         plot!(p[idx], grid_values, social_welfare_values,
-            label="Social Welfare",
-            marker=:hexagon,
-            linewidth=3,
-            linestyle=:dashdot,
-            color=:red)
+            label="Social Welfare", linewidth=3, linestyle=:dot, color=COLOR_SOC)
 
-        # Add zero line
         hline!(p[idx], [0], color=:gray, linestyle=:dot, label="", alpha=0.5)
+
+        # ── 세로선 추가 ───────────────────────────────────────────────────
+        if !isnothing(vlines) && haskey(vlines, policy_type)
+            vline_colors = [:darkred, :darkblue]
+            y_all = [cs_values; ps_values; gr_values; private_surplus_values; social_welfare_values]
+            y_top = isempty(y_all) ? 1.0 : maximum(y_all)
+            for (j, (xval, vlabel)) in enumerate(vlines[policy_type])
+                c = vline_colors[min(j, length(vline_colors))]
+                vline!(p[idx], [xval], color=c, linestyle=:dash, linewidth=1.8, label="")
+                annotate!(p[idx], xval, y_top * 0.95, text(vlabel, c, :center, 9))
+            end
+        end
+        # ─────────────────────────────────────────────────────────────────
     end
 
     return p
 end
 
 # Generate plot
-p_welfare_summary = plot_welfare_summary_by_policy(results_extended_analysis)
+p_welfare_summary = plot_welfare_summary_by_policy(results_extended_analysis; vlines=vlines_data)
 
-using Plots
-
-function plot_emissions_by_policy(results_extended_analysis)
+# emissions plot by policy type
+function plot_emissions_by_policy(results_extended_analysis; vlines=nothing)
     solutions = results_extended_analysis.solutions
     scenario_groups = results_extended_analysis.scenario_groups
 
-    # Create 2x2 subplot
     p = plot(layout=(2, 2), size=(1400, 1000),
         plot_title="Emissions by Policy Type",
         left_margin=5Plots.mm, bottom_margin=5Plots.mm)
 
     policy_info = Dict(
-        :carbontax => (label="Carbon Tax", xlabel="Tax (\$/ton CO2)"),
-        :rfs => (label="RFS Aviation", xlabel="Mandate Share"),
-        :lcfs => (label="LCFS", xlabel="Carbon Intensity Limit"),
-        :taxcredit => (label="Tax Credit", xlabel="Credit (\$/ton)")
+        :carbontax => (label="Carbon Tax",  xlabel="Tax (\$/ton CO2)"),
+        :rfs       => (label="RFS Aviation", xlabel="Mandate Share"),
+        :lcfs      => (label="LCFS",         xlabel="Carbon Intensity Limit"),
+        :taxcredit => (label="Tax Credit",   xlabel="Credit (\$/ton)")
     )
 
     for (idx, policy_type) in enumerate([:carbontax, :rfs, :lcfs, :taxcredit])
         scenario_list = scenario_groups[policy_type]
-
         if isempty(scenario_list)
             continue
         end
 
-        # Sort scenarios by policy intensity
-        sorted_scenarios = sort(scenario_list, by=s -> begin
-            parse(Int, split(String(s), "_")[2])
-        end)
+        sorted_scenarios = sort(scenario_list, by=s -> parse(Int, split(String(s), "_")[2]))
 
-        grid_values = Float64[]
+        grid_values     = Float64[]
         emission_values = Float64[]
 
         for scenario in sorted_scenarios
@@ -958,42 +1020,214 @@ function plot_emissions_by_policy(results_extended_analysis)
                 continue
             end
 
-            # Extract grid value
-            scenario_str = String(scenario)
-            grid_val = parse(Int, split(scenario_str, "_")[2])
-
-            # Adjust for RFS and LCFS (they use 0-100 scale)
-            if policy_type in [:rfs, :lcfs]
-                push!(grid_values, Float64(grid_val) / 100.0)
-            else
-                push!(grid_values, Float64(grid_val))
+            config = EXTENDED_POLICY_MATRIX[scenario]
+            if policy_type == :carbontax
+                push!(grid_values, config.t)
+            elseif policy_type == :rfs
+                push!(grid_values, config.θ_avi)
+            elseif policy_type == :lcfs
+                push!(grid_values, config.σ)
+            elseif policy_type == :taxcredit
+                push!(grid_values, config.p)
             end
 
-            # Get emission
             push!(emission_values, solutions[scenario].emissions.total)
         end
 
         info = policy_info[policy_type]
 
-        # Plot emissions
         plot!(p[idx], grid_values, emission_values,
             label="Total Emissions",
-            marker=:circle,
             linewidth=2,
             xlabel=info.xlabel,
-            ylabel="Emissions (tons CO2)",
+            ylabel="Emissions (Billion ton CO2e)",
             title=info.label,
             legend=:best,
             color=:red)
+
+        # ── 세로선 추가 ───────────────────────────────────────────────────
+        if !isnothing(vlines) && haskey(vlines, policy_type)
+            vline_colors = [:darkred, :darkblue]
+            y_top = isempty(emission_values) ? 1.0 : maximum(emission_values)
+            for (j, (xval, vlabel)) in enumerate(vlines[policy_type])
+                c = vline_colors[min(j, length(vline_colors))]
+                vline!(p[idx], [xval], color=c, linestyle=:dash, linewidth=1.8, label="")
+                annotate!(p[idx], xval, y_top * 0.98, text(vlabel, c, :center, 9))
+            end
+        end
+        # ─────────────────────────────────────────────────────────────────
     end
 
     return p
 end
 
 # Generate plot
-p_emissions = plot_emissions_by_policy(results_extended_analysis)
-display(p_emissions)
+p_emissions = plot_emissions_by_policy(results_extended_analysis; vlines=vlines_data)
 
-# Save plot
-savefig(p_emissions, "emissions_by_policy.png")
-println("\nPlot saved as emissions_by_policy.png")
+
+
+# Stacked quantity figure
+# Plot fuel production by policy grid with stacked area charts
+using Statistics
+function plot_fuel_production_stacked(results_df, fuel_config; vlines=nothing)
+
+    policies = [
+        ("carbontax", :t,     "Carbon Tax (\$ / ton CO2e)",    "Carbon Tax Policy",   false),
+        ("rfs",       :θ_avi, "RFS Aviation Mandate (θ_avi)",  "RFS Aviation Policy", false),
+        ("lcfs",      :σ,     "LCFS Standard (σ)",             "LCFS Policy",         true),
+        ("taxcredit", :p,     "Tax Credit Rate (\$ / gallon)", "Tax Credit Policy",   false)
+    ]
+
+    plots = []
+
+    for (i, (policy_type, xcol, xlabel, title, reverse_sort)) in enumerate(policies)
+        df = filter(row -> row.policy_type == policy_type, results_df)
+        sort!(df, xcol, rev=reverse_sort)
+
+        x_min = minimum(df[!, xcol])
+        x_max = maximum(df[!, xcol])
+        x_vals = df[!, xcol]
+
+        biofuel_sorted = sort(fuel_config.biofuel_types,
+            by=x -> mean(df[!, x[1]]),
+            rev=true
+        )
+
+        p = plot(
+            xlabel=xlabel,
+            ylabel="Quantity (billion gallons)",
+            title=title,
+            titlefontsize=16, titlefontweight=:bold,
+            legend=false, grid=true,
+            xlims=(x_min, x_max),
+            ylims=fuel_config.ylims,
+            margin=10Plots.mm, guidefontsize=11
+        )
+
+        main_fuel_vals = df[!, fuel_config.main_fuel]
+        plot!(p, x_vals, main_fuel_vals,
+            fillrange=fuel_config.ylims[1],
+            fillalpha=0.7, fillcolor=:lightgray,
+            linewidth=1.5, color=:black, label=""
+        )
+
+        cumsum_vals = copy(main_fuel_vals)
+        for (col, label, color) in biofuel_sorted
+            biofuel_vals = df[!, col]
+            new_cumsum = cumsum_vals .+ biofuel_vals
+            plot!(p, x_vals, new_cumsum,
+                fillrange=cumsum_vals,
+                fillalpha=0.7, fillcolor=color,
+                linewidth=1.5, color=color, label=""
+            )
+            cumsum_vals = new_cumsum
+        end
+
+        # ── 세로선 추가 ───────────────────────────────────────────────────
+        if !isnothing(vlines) && haskey(vlines, Symbol(policy_type))
+            vline_colors = [:darkred, :darkblue]
+            y_top = fuel_config.ylims[2]
+            for (j, (xval, vlabel)) in enumerate(vlines[Symbol(policy_type)])
+                c = vline_colors[min(j, length(vline_colors))]
+                vline!(p, [xval], color=c, linestyle=:dash, linewidth=1.8, label="")
+                annotate!(p, xval, y_top * 0.97, text(vlabel, c, :center, 9))
+            end
+        end
+        # ─────────────────────────────────────────────────────────────────
+
+        push!(plots, p)
+    end
+
+    p_legend = plot(
+        legend=:top, legendcolumns=fuel_config.legendcolumns,
+        grid=false, showaxis=false, ticks=false,
+        xlims=(0, 1), ylims=(0, 1), framestyle=:none,
+        legendfontsize=10, size=(2200, 80)
+    )
+    plot!(p_legend, [NaN], [NaN],
+        label=fuel_config.main_fuel_label,
+        linewidth=3, color=:black, fillalpha=0.7, fillcolor=:lightgray
+    )
+    for (col, label, color) in fuel_config.biofuel_types
+        plot!(p_legend, [NaN], [NaN],
+            label=label, linewidth=3, color=color,
+            fillalpha=0.7, fillcolor=color
+        )
+    end
+
+    final_plot = plot(
+        plot(plots..., layout=(2, 2)),
+        p_legend,
+        layout=grid(2, 1, heights=[0.95, 0.05]),
+        size=(2500, 1800),
+        plot_title=fuel_config.plot_title,
+        plot_titlefontsize=22, plot_titlefontweight=:bold,
+        margin=10Plots.mm
+    )
+
+    return final_plot
+end
+
+# =====================
+# Aviation Fuel Configuration
+# =====================
+aviation_config = (
+    main_fuel=:q_jet_fuel,
+    main_fuel_label="Jet Fuel",
+    ylims=(0, 22),
+    biofuel_types=[
+        (:q_saf_atj_conv,    "Conventional ATJ-SAF",   :blue),
+        (:q_saf_atj_cs,      "Climate-Smart ATJ-SAF",  :red),
+        (:q_saf_hefa_conv,   "Conventional HEFA-SAF",  :green),
+        (:q_saf_hefa_cs,     "Climate-Smart HEFA-SAF", :orange),
+        (:q_saf_hefa_nonsoy, "Non-soy HEFA-SAF",       :purple)
+    ],
+    plot_title="Aviation Fuel Production by Policy Stringency",
+    filename="aviation_fuel_stacked.png",
+    legendcolumns=6
+)
+
+aviation_plot = plot_fuel_production_stacked(results_df, aviation_config; vlines=vlines_data)
+#savefig(aviation_plot, aviation_config.filename)
+#display(aviation_plot)
+
+# =====================
+# Road Gasoline Configuration
+# =====================
+gasoline_config = (
+    main_fuel=:q_gasoline,
+    main_fuel_label="Gasoline",
+    ylims=(120, 150),
+    biofuel_types=[
+        (:q_ethanol, "Ethanol", :red)
+    ],
+    plot_title="Road Gasoline Fuel Production by Policy Stringency",
+    filename="road_gasoline_fuel_stacked.png",
+    legendcolumns=2
+)
+
+gasoline_plot = plot_fuel_production_stacked(results_df, gasoline_config; vlines=vlines_data)
+#savefig(gasoline_plot, gasoline_config.filename)
+#display(gasoline_plot)
+
+# =====================
+# Diesel Configuration
+# =====================
+diesel_config = (
+    main_fuel=:q_diesel,
+    main_fuel_label="Diesel",
+    ylims=(42, 50),
+    biofuel_types=[
+        (:q_rd_soy,          "Soy Renewable Diesel",     :red),
+        (:q_rd_nonsoy,       "Non-soy Renewable Diesel", :green),
+        (:q_biodiesel_soy,   "Soy Biodiesel",            :blue),
+        (:q_biodiesel_nonsoy,"Non-soy Biodiesel",        :purple)
+    ],
+    plot_title="Diesel Fuel Production by Policy Stringency",
+    filename="diesel_fuel_stacked.png",
+    legendcolumns=5
+)
+
+diesel_plot = plot_fuel_production_stacked(results_df, diesel_config; vlines=vlines_data)
+#savefig(diesel_plot, diesel_config.filename)
+#display(diesel_plot)

@@ -1,28 +1,32 @@
 # analysis.jl
+cd(@__DIR__)
+println("Working directory: ", pwd())
+
 include(joinpath(@__DIR__, "SAFModel.jl"))
 using .SAFModel
-import .SAFModel: params, calculate_all_implicit_taxes, display_comparison_tables, calculate_emissions_detail, FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
-using JLD2
-using DataFrames
-using Printf
+import .SAFModel: params, FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS, tax_credit_rate
+using JLD2;
+using DataFrames;
+using Printf;
 
+# =================================================================================
+# 1. Functions for Displaying Comparison Tables and individual Tables
+# =================================================================================
 
-# =====================
-# Display Comparison Tables and individual Tables
-# =====================
 function display_comparison_tables(solutions, params, policy_configs;
     scenarios=nothing,
     title="RESULTS",
-    show_policy_params=false,  # ⭐ Target 분석용 옵션
-    equivalent_policies=nothing)  # ⭐ Target 분석용 데이터
+    show_policy_params=true,
+    equivalent_policies=nothing)
 
     println("\n" * "="^130)
     println(title)
     println("="^130)
 
-    # ⭐ Policy Parameters (Target 분석에만 표시)
-    if show_policy_params && !isnothing(equivalent_policies)
+    # Policy Parameters
+    if show_policy_params
         policy_labels = Dict(
+            :statusquo => ("Status Quo", "No Policy"),
             :carbontax => ("Carbon Tax", "Carbon Tax (\$/ton CO2e)"),
             :rfs => ("RFS Aviation", "Mandate Share"),
             :lcfs => ("LCFS", "CI Reduction (σ)"),
@@ -30,30 +34,76 @@ function display_comparison_tables(solutions, params, policy_configs;
         )
 
         println("\n--- Policy Parameters ---")
-        param_df = DataFrame(
-            Policy=String[],
-            Parameter_Name=String[],
-            Parameter_Value=Float64[],
-            Actual_SAF=Float64[]
-        )
 
-        for policy_type in [:carbontax, :rfs, :lcfs, :taxcredit]
-            if haskey(equivalent_policies, policy_type)
-                result = equivalent_policies[policy_type]
-                config = result.config
-                label, param_name = policy_labels[policy_type]
+        # ⭐ if-else를 여기서 시작
+        if !isnothing(equivalent_policies)  # Target analysis
+            param_df = DataFrame(
+                Policy=String[],
+                Parameter_Name=String[],
+                Parameter_Value=Float64[],
+                Target_Metric=String[],
+                Actual_Value=Float64[]
+            )
 
-                param_value = if policy_type == :carbontax
-                    config.t
-                elseif policy_type == :rfs
-                    config.θ_avi
-                elseif policy_type == :lcfs
-                    config.σ
-                else
-                    config.p
+            for policy_type in [:statusquo, :carbontax, :rfs, :lcfs, :taxcredit]
+                if haskey(equivalent_policies, policy_type)
+                    result = equivalent_policies[policy_type]
+                    config = result.config
+                    label, param_name = policy_labels[policy_type]
+
+                    param_value = if policy_type == :carbontax
+                        config.t
+                    elseif policy_type == :rfs
+                        config.θ_avi
+                    elseif policy_type == :lcfs
+                        config.σ
+                    elseif policy_type == :taxcredit
+                        config.p
+                    else
+                        0.0
+                    end
+
+                    if haskey(result, :actual_saf)
+                        target_metric = "SAF (billion gal)"
+                        actual_value = result.actual_saf
+                    elseif haskey(result, :actual_emission)
+                        target_metric = "Emissions (Bton CO2e)"
+                        actual_value = result.actual_emission
+                    else
+                        target_metric = "N/A"
+                        actual_value = NaN
+                    end
+
+                    push!(param_df, (label, param_name, param_value, target_metric, actual_value))
                 end
+            end
 
-                push!(param_df, (label, param_name, param_value, result.actual_saf))
+        else  # Base analysis
+            param_df = DataFrame(
+                Policy=String[],
+                Parameter_Name=String[],
+                Parameter_Value=Float64[]
+            )
+
+            for policy_type in [:statusquo, :carbontax, :rfs, :lcfs, :taxcredit]
+                if haskey(policy_configs, policy_type)
+                    config = policy_configs[policy_type]
+                    label, param_name = policy_labels[policy_type]
+
+                    param_value = if policy_type == :carbontax
+                        config.t
+                    elseif policy_type == :rfs
+                        config.θ_avi
+                    elseif policy_type == :lcfs
+                        config.σ
+                    elseif policy_type == :taxcredit
+                        config.p
+                    else
+                        0.0
+                    end
+
+                    push!(param_df, (label, param_name, param_value))
+                end
             end
         end
 
@@ -85,6 +135,7 @@ end
 # 1) Implicit Tax/Subsidy Calculation
 # =====================
 
+# calculate implicit tax and subsidy
 function calculate_implicit_taxes(solution, params, config)
     if isnothing(solution)
         return nothing
@@ -95,7 +146,6 @@ function calculate_implicit_taxes(solution, params, config)
     θ_avi = config.θ_avi
     σ = config.σ
     p = config.p
-    #t, θ_avi, σ, p = config
 
     # Get coefficients
     delta = params.coeff.delta
@@ -151,9 +201,8 @@ function calculate_implicit_taxes(solution, params, config)
     return implicit_tax
 end
 
-"""
-Calculate implicit taxes for all solutions
-"""
+
+# Calculate implicit taxes for all solutions
 function calculate_all_implicit_taxes(solutions, params, policy_configs)
     implicit_taxes = Dict()
     for (scenario, solution) in solutions
@@ -165,9 +214,8 @@ function calculate_all_implicit_taxes(solutions, params, policy_configs)
     return implicit_taxes
 end
 
-"""
-Create implicit tax table
-"""
+
+# Create implicit tax table
 function make_implicit_tax_table(implicit_taxes, params; scenarios=nothing, exclude_statusquo=true)
     scenario_list = isnothing(scenarios) ? collect(keys(implicit_taxes)) : scenarios
     labels = params.meta[:process_labels]
@@ -209,9 +257,8 @@ function make_implicit_tax_table(implicit_taxes, params; scenarios=nothing, excl
     return df
 end
 
-"""
-Display implicit taxes with custom formatting
-"""
+
+# Display implicit taxes with custom formatting
 function display_implicit_taxes(implicit_taxes, params; scenarios=nothing, show_statusquo=false)
     labels = params.meta[:process_labels]
 
@@ -437,7 +484,6 @@ end
 
 # Emissions
 function calculate_emissions_detail(solution, params)
-    """Calculate detailed emissions by sector"""
     AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
     ROAD_FUELS = [:gasoline, :ethanol, :diesel,
@@ -449,7 +495,9 @@ function calculate_emissions_detail(solution, params)
     # Sector emissions (billion ton CO2e)
     avi_emission = sum(delta[g] * solution.q[g] for g in AVIATION_FUELS)
     road_emission = sum(delta[g] * solution.q[g] for g in ROAD_FUELS)
-    food_emission = sum(delta[g] * solution.x[g] for g in FOOD_GOODS)
+    corn_emissions = delta[:corn] * (solution.x[:corn] - solution.ddgs)  # Corn demand excluding DDGS
+    soy_emissions = delta[:soyoil] * solution.x[:soyoil]
+    food_emission = corn_emissions + soy_emissions
     total_emission = avi_emission + road_emission + food_emission
 
     # Detailed fuel-level emissions
@@ -458,7 +506,8 @@ function calculate_emissions_detail(solution, params)
     )
 
     food_emissions = Dict(
-        g => delta[g] * solution.x[g] for g in FOOD_GOODS
+        :corn => delta[:corn] * (solution.x[:corn] - solution.ddgs),
+        :soyoil => delta[:soyoil] * solution.x[:soyoil]
     )
 
     return (
@@ -493,7 +542,7 @@ function make_emissions_table(solutions, params; scenarios=nothing)
 
         avi_emission = sum(delta[g] * sol.q[g] for g in AVIATION_FUELS)
         road_emission = sum(delta[g] * sol.q[g] for g in ROAD_FUELS)
-        food_emission = sum(delta[g] * sol.x[g] for g in FOOD_GOODS)
+        food_emission = delta[:corn] * (sol.x[:corn] - sol.ddgs) + delta[:soyoil] * sol.x[:soyoil]
 
         push!(df, (
             String(scenario),
@@ -540,10 +589,12 @@ end
 
 
 # =================================================================================
-# RUN ANALYSIS
+# 2. RUN ANALYSIS
 # =================================================================================
 
-# PART 1: BASE SCENARIOS
+# =====================
+# 1) BASE SCENARIOS
+# =====================
 println("\n" * "="^130)
 println("LOADING BASE AND STATUS QUO SCENARIOS")
 println("="^130)
@@ -559,7 +610,9 @@ display_comparison_tables(
     title="BASE SCENARIO RESULTS"
 )
 
+# =====================
 # PART 2: TARGET SAF
+# =====================
 println("\n" * "="^130)
 println("LOADING TARGET SAF ANALYSIS")
 println("="^130)
@@ -577,22 +630,12 @@ display_comparison_tables(
     equivalent_policies=equivalent_policies  # ⭐ Policy 데이터 전달
 )
 
-println("\n" * "="^130)
-println("ANALYSIS COMPLETE")
-println("="^130)
-
 
 # =================================================================================
-# SAVE RESULTS WITH IMPLICIT TAXES FOR WELFARE ANALYSIS
+# 3. Save the results (implicit taxes, emissions)
 # =================================================================================
 
-println("\n" * "="^80)
-println("SAVING RESULTS WITH IMPLICIT TAXES")
-println("="^80)
-
-# =====================
-# Base scenarios 분석 데이터 저장
-# =====================
+# Base scenarios
 implicit_taxes_base = calculate_all_implicit_taxes(results_base, params, policy_configs_base)
 
 results_base_analysis = Dict()
@@ -600,21 +643,18 @@ for (scenario, solution) in results_base
     emissions = calculate_emissions_detail(solution, params)
 
     results_base_analysis[scenario] = merge(
-        solution,  # 기존 solution
+        solution,
         (
             implicit_taxes=implicit_taxes_base[scenario],
             emissions=emissions
-            # 향후 추가될 수 있는 분석 데이터...
+            # I can add more analysis data here in the future...
         )
     )
 end
 
 @save "results_base_analysis.jld2" results_base_analysis policy_configs_base
-println("✓ Saved results_base_analysis.jld2 (with implicit taxes + emissions)")
 
-# =====================
-# Target/Equivalent scenarios 분석 데이터 저장
-# =====================
+# Target/Equivalent scenarios
 implicit_taxes_equivalent = calculate_all_implicit_taxes(equivalent_solutions, params, policy_configs_target)
 
 results_equivalent_analysis = Dict()
@@ -626,12 +666,11 @@ for (scenario, solution) in equivalent_solutions
         (
             implicit_taxes=implicit_taxes_equivalent[scenario],
             emissions=emissions
-            # 향후 추가될 수 있는 분석 데이터...
         )
     )
 end
 
 @save "results_equivalent_analysis.jld2" results_equivalent_analysis policy_configs_target equivalent_policies target_saf
-println("✓ Saved results_equivalent_analysis.jld2 (with implicit taxes + emissions)")
 
-println("\n" * "="^80)
+
+

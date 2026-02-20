@@ -102,23 +102,24 @@ r = Dict(
     :saf_atj_conv => 0.59,
     :saf_atj_cs => 0.59,
     :ethanol => 0.3448,
-    :saf_hefa_conv => 8.0,
-    :saf_hefa_cs => 8.0,
-    :saf_hefa_nonsoy => 8.0,
+    :saf_hefa_conv => 9.0,
+    :saf_hefa_cs => 9.0,
+    :saf_hefa_nonsoy => 9.0,
     :biodiesel_soy => 7.55,
     :biodiesel_nonsoy => 7.55,
-    :rd_soy => 7.55,
-    :rd_nonsoy => 7.55
+    :rd_soy => 8.5,
+    :rd_nonsoy => 8.5
 )
 
 # theta: road sector RFS D6 blending share
 θ = 0.125
 
 # Soybeans to oil conversion factor (lb oil per bushel soybeans)
-soybean_to_oil = 10.71
+soybean_to_oil = 10.71 # lb oil per bushel of soybeans
+soybean_to_meal = 0.02155 # metric ton / bushel of soybeans
 
 # meal per oil ratio: (million metric ton of meal per billion lb of oil)
-meal_per_oil = 2.0116
+meal_per_oil = 2.22
 
 # delta_mj for IRA credit calculation
 δ_mj_vec = [
@@ -161,21 +162,34 @@ demand = Dict(
     :die => create_demand_params(-0.1, 0.3356, 357.28, 10.0),
     :corn => create_demand_params(-0.23, 4.55, 7.1951 + 1.313879, 20.0), # food+DDGS
     :soyoil => create_demand_params(-0.18, 0.465, 14.164, 5.0),
-    :soymeal => create_demand_params(-0.941, 423.41, 56.155, 600.0)
+    :soymeal => create_demand_params(-0.941, 423.41, 62.27, 600.0)
 )
 
 # Fuel supply functions: fuel hockey stick = c0 + c1*q + c2*(x-v)^2
 # Feedstock to SAF production constant
+
+
 #LOW
 c0_vec = [
     2.338,  # 1. jet_fuel
     0.32,               # 2. saf_atj (shared by conv & cs ATJ SAF)
+    1.145,               # 3. saf_hefa (shared by conv, cs, nonsoy HEFA SAF, rd_soy, rd_nonsoy)
+    2.7,               # 4. gasoline
+    0.23,                # 5. ethanol
+    2.435,              # 6. diesel
+    1.0               # 7. biodiesel (shared by soy and nonsoy biodiesel)
+]
+#=
+#LOW
+c0_vec = [
+    2.338,  # 1. jet_fuel
+    1.0,               # 2. saf_atj (shared by conv & cs ATJ SAF)
     0.44,               # 3. saf_hefa (shared by conv, cs, nonsoy HEFA SAF, rd_soy, rd_nonsoy)
     2.7,               # 4. gasoline
     0.23,                # 5. ethanol
     2.435,              # 6. diesel
-    1.16,               # 7. biodiesel_soy
-    1.16                # 8. biodiesel_nonsoy
+    0.16,               # 7. biodiesel_soy
+    0.16                # 8. biodiesel_nonsoy
 ]
 #Medium
 c0_vec = [
@@ -188,6 +202,9 @@ c0_vec = [
     1.16,               # 7. biodiesel_soy
     1.16                # 8. biodiesel_nonsoy
 ]
+
+
+
 #HIGH
 c0_vec = [
     2.338,  # 1. jet_fuel
@@ -196,9 +213,11 @@ c0_vec = [
     2.7,               # 4. gasoline
     0.23,                # 5. ethanol
     2.435,              # 6. diesel
-    1.16,               # 7. biodiesel_soy
-    1.16                # 8. biodiesel_nonsoy
+    1.0,               # 7. biodiesel_soy
+    1.0                # 8. biodiesel_nonsoy
 ]
+=#
+
 c1_vec = [
     0.0,  # 1. jet_fuel
     0.0,     # 2. saf_atj (shared)
@@ -206,10 +225,8 @@ c1_vec = [
     0.0,   # 4. gasoline
     0.0,   # 5. ethanol
     0.0,  # 6. diesel
-    0.0,     # 7. biodiesel_soy
-    0.0      # 8. biodiesel_nonsoy
+    0.0     # 7. biodiesel_soy
 ]
-
 
 c2_vec = [
     50.0,  # 1. jet_fuel
@@ -218,8 +235,7 @@ c2_vec = [
     50.0,  # 4. gasoline
     50.0,  # 5. ethanol
     50.0,  # 6. diesel
-    10.0,  # 7. biodiesel_soy
-    50.0   # 8. biodiesel_nonsoy
+    10.0  # 7. biodiesel_soy
 ]
 
 v_vec = [
@@ -229,8 +245,7 @@ v_vec = [
     42557.0,  # 4. gasoline
     18.01,    # 5. ethanol
     64.68,    # 6. diesel
-    2.092,    # 7. biodiesel_soy
-    3.0       # 8. biodiesel_nonsoy
+    5.0    # 7. biodiesel_soy
 ]
 
 # Create mapping for fuel cost parameters
@@ -241,8 +256,7 @@ fuel_goods_cost_map = [
     :gasoline,
     :ethanol,
     :diesel,
-    :biodiesel_soy,
-    :biodiesel_nonsoy
+    :biodiesel_shared # Used for both biodiesel_soy and biodiesel_nonsoy
 ]
 
 fuel_cost = Dict()
@@ -254,7 +268,7 @@ end
 # land supply functions: land = L0*(r/r0)^ϵ
 land_supply = (
     L0=0.11768, # baseline land use
-    r0_land=586.6, # baseline land rent
+    r0_land=587.71, # baseline land rent
     ϵ_land=0.1  # land supply elasticity
 )
 
@@ -271,10 +285,10 @@ supply = (
 κ = 19.0  # $ per acre
 
 # Non-soy feedstock price ($/lb)
-const nonsoy_feedstock_price = 0.48
+const nonsoy_feedstock_price = 0.49
 
 # HEFA SAF additional processing cost compared to RD ($/gal)
-const hefa_saf_premium = 0.08
+const hefa_saf_premium = 0.064
 
 coeff = (
     delta=δ,
@@ -286,6 +300,7 @@ coeff = (
     omega=ω,
     kappa=κ,
     soybean_to_oil=soybean_to_oil,
+    soybean_to_meal=soybean_to_meal,
     meal_per_oil=meal_per_oil,
     delta_mj=δ_mj,
     baselineCI=baselineCI,
@@ -331,7 +346,6 @@ meta = Dict(
         :rfs => "RFS",
         :lcfs => "LCFS",
         :tax_credit => "Tax credit",
-        #:obs2024 => "2024 observed"
     )
 )
 
@@ -364,7 +378,6 @@ function build_unified_model(params, config)
 
     model = Model(PATHSolver.Optimizer)
     set_silent(model)
-
     # Unpack parameters
     coeff = params.coeff
     demand = params.demand
@@ -377,6 +390,7 @@ function build_unified_model(params, config)
     delta = coeff.delta
     gamma = coeff.gamma
     soybean_to_oil = coeff.soybean_to_oil
+    soybean_to_meal = coeff.soybean_to_meal
     meal_per_oil = coeff.meal_per_oil
     fuel_cost = supply.fuel
     land_supply = supply.land
@@ -489,17 +503,18 @@ function build_unified_model(params, config)
     @expression(model, q_corn_n, omega * gamma[:feedstock_corn_n] * l_n)
     @expression(model, q_corn_cs, omega * gamma[:feedstock_corn_cs] * l_cs)
     @expression(model, q_soy_n, (1 - omega) * gamma[:feedstock_soy_n] * l_n * soybean_to_oil)
+    # oil and meal are jointly produced, so soybeans quantity = soybean oil * soybean_to_oil = soybean meal * soybean_to_meal. gamma here is for soybeans before crushing.
     @expression(model, q_soy_cs, (1 - omega) * gamma[:feedstock_soy_cs] * l_cs * soybean_to_oil)
 
     # Marginal revenue: Upstream farmers
     @expression(model, marginal_revenue_n,
         omega * gamma[:feedstock_corn_n] * p_f[:feedstock_corn_n] +
-        (1 - omega) * gamma[:feedstock_soy_n] * p_f[:feedstock_soy_n] * soybean_to_oil
+        (1 - omega) * gamma[:feedstock_soy_n] * (p_f[:feedstock_soy_n] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal)
     )
 
     @expression(model, marginal_revenue_cs,
         omega * gamma[:feedstock_corn_cs] * p_f[:feedstock_corn_cs] +
-        (1 - omega) * gamma[:feedstock_soy_cs] * p_f[:feedstock_soy_cs] * soybean_to_oil
+        (1 - omega) * gamma[:feedstock_soy_cs] * (p_f[:feedstock_soy_cs] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal)
     )
 
     # zero profit condition
@@ -537,9 +552,14 @@ function build_unified_model(params, config)
         fuel_cost[:saf_hefa_shared].c2 * max(0, total_saf_hefa - fuel_cost[:saf_hefa_shared].v)^2
     )
 
+    @expression(model, process_mc_biodiesel,
+        fuel_cost[:biodiesel_shared].c0 +
+        fuel_cost[:biodiesel_shared].c1 * (q[:biodiesel_soy] + q[:biodiesel_nonsoy]) +
+        fuel_cost[:biodiesel_shared].c2 * max(0, (q[:biodiesel_soy] + q[:biodiesel_nonsoy]) - fuel_cost[:biodiesel_shared].v)^2
+    )
+
     # Marginal costs for other fuels
-    @expression(model, marginal_costs_fuel[g in (:jet_fuel, :gasoline, :diesel, :ethanol,
-            :biodiesel_soy, :biodiesel_nonsoy)],
+    @expression(model, marginal_costs_fuel[g in (:jet_fuel, :gasoline, :diesel, :ethanol)],
         fuel_cost[g].c0 +
         fuel_cost[g].c1 * q[g] +
         fuel_cost[g].c2 * max(0, q[g] - fuel_cost[g].v)^2)
@@ -582,7 +602,6 @@ function build_unified_model(params, config)
         # 2. RFS aviation mandate
         λ_rfs_avi * (
             (g == :jet_fuel) ? config.θ_avi :
-            #(g in SAF_GOODS) ? -1.6 : 0.0
             (g in SAF_GOODS && delta[g] <= 0.5 * delta[:jet_fuel]) ? -1.6 : 0.0 # 50% CI threshold
         ) +
 
@@ -621,7 +640,7 @@ function build_unified_model(params, config)
 
     # Conventional HEFA SAF
     @constraint(model,
-        process_mc_hefa + hefa_saf_premium +
+        process_mc_hefa +
         alpha[:saf_hefa_conv] * p_f[:feedstock_soy_n] +
         policy_adjustment[:saf_hefa_conv] -
         price_per_unit[:saf_hefa_conv]
@@ -631,7 +650,7 @@ function build_unified_model(params, config)
 
     # Climate-smart HEFA SAF producers
     @constraint(model,
-        process_mc_hefa + hefa_saf_premium +
+        process_mc_hefa +
         alpha[:saf_hefa_cs] * p_f[:feedstock_soy_cs] +
         policy_adjustment[:saf_hefa_cs] -
         price_per_unit[:saf_hefa_cs]
@@ -641,7 +660,7 @@ function build_unified_model(params, config)
 
     # Non-soy HEFA SAF producers
     @constraint(model,
-        process_mc_hefa + hefa_saf_premium +
+        process_mc_hefa +
         alpha[:saf_hefa_nonsoy] * nonsoy_feedstock_price +
         policy_adjustment[:saf_hefa_nonsoy] -
         price_per_unit[:saf_hefa_nonsoy]
@@ -662,7 +681,7 @@ function build_unified_model(params, config)
 
     # Soy biodiesel producers
     @constraint(model,
-        marginal_costs_fuel[:biodiesel_soy] +
+        process_mc_biodiesel +
         alpha[:biodiesel_soy] * p_f[:feedstock_soy_n] +
         policy_adjustment[:biodiesel_soy] -
         price_per_unit[:biodiesel_soy]
@@ -672,7 +691,7 @@ function build_unified_model(params, config)
 
     # Non Soy biodiesel producers
     @constraint(model,
-        marginal_costs_fuel[:biodiesel_nonsoy] +
+        process_mc_biodiesel +
         alpha[:biodiesel_nonsoy] * nonsoy_feedstock_price +
         policy_adjustment[:biodiesel_nonsoy] -
         price_per_unit[:biodiesel_nonsoy]
@@ -681,7 +700,7 @@ function build_unified_model(params, config)
     )
     # Soy renewable diesel producers
     @constraint(model,
-        process_mc_hefa +
+        process_mc_hefa - hefa_saf_premium +
         alpha[:rd_soy] * p_f[:feedstock_soy_n] +
         policy_adjustment[:rd_soy] -
         price_per_unit[:rd_soy]
@@ -691,7 +710,7 @@ function build_unified_model(params, config)
 
     # Non Soy Renewable diesel producers
     @constraint(model,
-        process_mc_hefa +
+        process_mc_hefa - hefa_saf_premium +
         alpha[:rd_nonsoy] * nonsoy_feedstock_price +
         policy_adjustment[:rd_nonsoy] -
         price_per_unit[:rd_nonsoy]
@@ -816,7 +835,6 @@ function build_unified_model(params, config)
     # RFS aviation (controlled by θ_avi)
     @constraint(model,
         1.6 * sum(q[g] for g in SAF_GOODS if delta[g] <= 0.5 * delta[:jet_fuel]) - config.θ_avi * q[:jet_fuel] # 50% CI threshold
-        # 1.6 * sum(q[g] for g in SAF_GOODS) - config.θ_avi * q[:jet_fuel]
         ⟂
         λ_rfs_avi
     )
@@ -944,4 +962,3 @@ export params, tax_credit_rate, build_unified_model, run_scenario, extract_solut
 export FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
 
 end # module SAFPolicy
-
