@@ -115,10 +115,11 @@ r = Dict(
 θ = 0.125
 
 # Soybeans to oil conversion factor (lb oil per bushel soybeans)
-soybean_to_oil = 10.71
+soybean_to_oil = 10.71 # lb oil per bushel of soybeans
+soybean_to_meal = 0.02155 # metric ton / bushel of soybeans
 
 # meal per oil ratio: (million metric ton of meal per billion lb of oil)
-meal_per_oil = 2.0116
+meal_per_oil = 2.22
 
 # delta_mj for IRA credit calculation
 δ_mj_vec = [
@@ -299,6 +300,7 @@ coeff = (
     omega=ω,
     kappa=κ,
     soybean_to_oil=soybean_to_oil,
+    soybean_to_meal=soybean_to_meal,
     meal_per_oil=meal_per_oil,
     delta_mj=δ_mj,
     baselineCI=baselineCI,
@@ -388,6 +390,7 @@ function build_unified_model(params, config)
     delta = coeff.delta
     gamma = coeff.gamma
     soybean_to_oil = coeff.soybean_to_oil
+    soybean_to_meal = coeff.soybean_to_meal
     meal_per_oil = coeff.meal_per_oil
     fuel_cost = supply.fuel
     land_supply = supply.land
@@ -500,17 +503,18 @@ function build_unified_model(params, config)
     @expression(model, q_corn_n, omega * gamma[:feedstock_corn_n] * l_n)
     @expression(model, q_corn_cs, omega * gamma[:feedstock_corn_cs] * l_cs)
     @expression(model, q_soy_n, (1 - omega) * gamma[:feedstock_soy_n] * l_n * soybean_to_oil)
+    # oil and meal are jointly produced, so soybeans quantity = soybean oil * soybean_to_oil = soybean meal * soybean_to_meal. gamma here is for soybeans before crushing.
     @expression(model, q_soy_cs, (1 - omega) * gamma[:feedstock_soy_cs] * l_cs * soybean_to_oil)
 
     # Marginal revenue: Upstream farmers
     @expression(model, marginal_revenue_n,
         omega * gamma[:feedstock_corn_n] * p_f[:feedstock_corn_n] +
-        (1 - omega) * gamma[:feedstock_soy_n] * p_f[:feedstock_soy_n] * soybean_to_oil
+        (1 - omega) * gamma[:feedstock_soy_n] * (p_f[:feedstock_soy_n] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal)
     )
 
     @expression(model, marginal_revenue_cs,
         omega * gamma[:feedstock_corn_cs] * p_f[:feedstock_corn_cs] +
-        (1 - omega) * gamma[:feedstock_soy_cs] * p_f[:feedstock_soy_cs] * soybean_to_oil
+        (1 - omega) * gamma[:feedstock_soy_cs] * (p_f[:feedstock_soy_cs] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal)
     )
 
     # zero profit condition
@@ -706,7 +710,7 @@ function build_unified_model(params, config)
 
     # Non Soy Renewable diesel producers
     @constraint(model,
-        process_mc_hefa - hefa_saf_premium + #0.01 +
+        process_mc_hefa - hefa_saf_premium +
         alpha[:rd_nonsoy] * nonsoy_feedstock_price +
         policy_adjustment[:rd_nonsoy] -
         price_per_unit[:rd_nonsoy]

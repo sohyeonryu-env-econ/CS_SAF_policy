@@ -116,7 +116,7 @@ end
 
 # Multiple Target
 # Run target SAF analysis
-const TARGET_SAF_VALUES = [3.0, 5.0]
+const TARGET_SAF_VALUES = [3.0, 6.0]
 
 #target_saf = 3.0
 policy_types = [:carbontax, :rfs, :lcfs, :taxcredit]
@@ -159,9 +159,9 @@ for target_saf in TARGET_SAF_VALUES
         equivalent_solutions_var = equivalent_solutions
         policy_configs_target_var = policy_configs_target
 
-        if target_saf == 5.0
-            @save "results_target_5.jld2" equivalent_policies_5 = equivalent_policies equivalent_solutions_5 = equivalent_solutions target_saf_5 = target_saf policy_configs_target_5 = policy_configs_target
-            println("\n✓ Target SAF (5B) results saved to results_target_5.jld2")
+        if target_saf == 6.0
+            @save "results_target_6.jld2" equivalent_policies_6 = equivalent_policies equivalent_solutions_6 = equivalent_solutions target_saf_6 = target_saf policy_configs_target_6 = policy_configs_target
+            println("\n✓ Target SAF (6B) results saved to results_target_6.jld2")
         else
             filename = "results_target_$(Int(target_saf)).jld2"
             @save filename equivalent_policies equivalent_solutions target_saf policy_configs_target

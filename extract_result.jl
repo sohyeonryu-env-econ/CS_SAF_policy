@@ -16,18 +16,15 @@ using JuMP
 observed_data = Dict(
     # Production (billion gallons)
     ("Production", "jet_fuel") => 20.3386,
-    ("Production", "saf_atj_conv") => missing,
-    ("Production", "saf_atj_cs") => missing,
-    ("Production", "saf_hefa_conv") => missing,
-    ("Production", "saf_hefa_cs") => missing,
-    ("Production", "saf_hefa_nonsoy") => missing,
     ("Production", "gasoline") => 125.613,
     ("Production", "ethanol") => 14.245,
     ("Production", "diesel") => 43.9,
     ("Production", "biodiesel_soy") => 1.09326,
     ("Production", "biodiesel_nonsoy") => 0.82474,
+    ("Production", "biodiesel_total") => 1.09326 + 0.82474,
     ("Production", "rd_soy") => 0.98982,
     ("Production", "rd_nonsoy") => 2.67618,
+    ("Production", "rd_total") => 0.98982 + 2.67618,
 
     # Demand (billion miles or billion bushels)
     ("Demand", "avi") => 1199.1328,
@@ -52,6 +49,7 @@ observed_data = Dict(
     # Land (million acres)
     ("Land", "Conventional") => 120.09,
     ("Land", "Climate Smart") => missing,
+    ("Land", "Total") => 120.09,
 
     # Feedstock production (billion bushels)
     ("Feedstock production", "corn_n") => 13.0,
@@ -83,6 +81,7 @@ validation_data = Dict(
     # Land (million acres)
     ("Land", "Conventional") => 117.68,
     ("Land", "Climate Smart") => missing,
+    ("Land", "Total") => 117.68,
 
     # Feedstock production (billion bushels)
     ("Feedstock production", "corn_n") => 12.04,
@@ -97,7 +96,7 @@ validation_data = Dict(
 # 각 타겟별 결과를 저장할 Dictionary
 all_target_results = Dict()
 
-const TARGET_SAF_VALUES = [3.0, 5.0]  # 타겟 SAF 양 (3B, 5B gallons)
+const TARGET_SAF_VALUES = [3.0, 6.0]  # 타겟 SAF 양 (3B, 5B gallons)
 for target_saf in TARGET_SAF_VALUES
     suffix = target_saf == 3.0 ? "" : "_$(Int(target_saf))"
 
@@ -349,7 +348,62 @@ for good in PRODUCTION_GOOD
         end
     end
     add_row!(df, "Production", string(good), "B gal", q_dict)
+
+    # saf_hefa_nonsoy 직후에 saf_total 삽입
+    if good == :saf_hefa_nonsoy
+        saf_total_dict = Dict()
+        for (scenario, group) in scenario_order
+            if group == :observed || group == :validation
+                saf_total_dict[(scenario, group)] = missing
+            else
+                sol = get_solution(scenario, group)
+                vals = [safe_get_value(sol.q, k) for k in [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]]
+                saf_total_dict[(scenario, group)] = any(ismissing, vals) ? missing : sum(vals)
+            end
+        end
+        add_row!(df, "Production", "saf_total", "B gal", saf_total_dict)
+    end
 end
+
+# Add biodiesel_total
+biodiesel_total_dict = Dict()
+for (scenario, group) in scenario_order
+    if group == :observed
+        biodiesel_total_dict[(scenario, group)] = get(observed_data, ("Production", "biodiesel_total"), missing)
+    elseif group == :validation
+        biodiesel_total_dict[(scenario, group)] = get(validation_data, ("Production", "biodiesel_total"), missing)
+    else
+        sol = get_solution(scenario, group)
+        bd_soy = safe_get_value(sol.q, :biodiesel_soy)
+        bd_nonsoy = safe_get_value(sol.q, :biodiesel_nonsoy)
+        if !ismissing(bd_soy) && !ismissing(bd_nonsoy)
+            biodiesel_total_dict[(scenario, group)] = bd_soy + bd_nonsoy
+        else
+            biodiesel_total_dict[(scenario, group)] = missing
+        end
+    end
+end
+add_row!(df, "Production", "biodiesel_total", "B gal", biodiesel_total_dict)
+
+# Add rd_total
+rd_total_dict = Dict()
+for (scenario, group) in scenario_order
+    if group == :observed
+        rd_total_dict[(scenario, group)] = get(observed_data, ("Production", "rd_total"), missing)
+    elseif group == :validation
+        rd_total_dict[(scenario, group)] = get(validation_data, ("Production", "rd_total"), missing)
+    else
+        sol = get_solution(scenario, group)
+        rd_soy = safe_get_value(sol.q, :rd_soy)
+        rd_nonsoy = safe_get_value(sol.q, :rd_nonsoy)
+        if !ismissing(rd_soy) && !ismissing(rd_nonsoy)
+            rd_total_dict[(scenario, group)] = rd_soy + rd_nonsoy
+        else
+            rd_total_dict[(scenario, group)] = missing
+        end
+    end
+end
+add_row!(df, "Production", "rd_total", "B gal", rd_total_dict)
 
 # Demand (x)
 demand_sectors = [
@@ -431,21 +485,30 @@ end
 # Land use
 ln_dict = Dict()
 lcs_dict = Dict()
+ltotal_dict = Dict()
+
 for (scenario, group) in scenario_order
     if group == :observed
         ln_dict[(scenario, group)] = get(observed_data, ("Land", "Conventional"), missing)
         lcs_dict[(scenario, group)] = get(observed_data, ("Land", "Climate Smart"), missing)
+        ltotal_dict[(scenario, group)] = get(observed_data, ("Land", "Total"), missing)
     elseif group == :validation
         ln_dict[(scenario, group)] = get(validation_data, ("Land", "Conventional"), missing)
         lcs_dict[(scenario, group)] = get(validation_data, ("Land", "Climate Smart"), missing)
+        ltotal_dict[(scenario, group)] = get(validation_data, ("Land", "Total"), missing)
     else
         sol = get_solution(scenario, group)
-        ln_dict[(scenario, group)] = sol.l_n * 1000
-        lcs_dict[(scenario, group)] = sol.l_cs * 1000
+        l_n = sol.l_n * 1000
+        l_cs = sol.l_cs * 1000
+        ln_dict[(scenario, group)] = l_n
+        lcs_dict[(scenario, group)] = l_cs
+        ltotal_dict[(scenario, group)] = l_n + l_cs
     end
 end
+
 add_row!(df, "Land", "Conventional", "M acres", ln_dict)
 add_row!(df, "Land", "Climate Smart", "M acres", lcs_dict)
+add_row!(df, "Land", "Total", "M acres", ltotal_dict)
 
 # Feedstock production
 feedstock_production = [
@@ -680,26 +743,45 @@ for component in AAC_COMPONENTS
 end
 
 # =================================================================================
-# 16. Save to CSV
+# 16. Save to CSV with Custom Rounding
 # =================================================================================
-function round_value(x)
+
+function round_value_custom(x, category, variable)
     if ismissing(x)
         return missing
-    elseif x isa Number
-        return round(x, digits=2)
-    else
+    elseif !(x isa Number)
         return x
     end
-end
 
-# Apply rounding to all columns except Category, Variable, Unit
-for col in names(df)
-    if col ∉ [:Category, :Variable, :Unit]
-        df[!, col] = round_value.(df[!, col])
+    # Price_consumer: 3 decimal places
+    if category in ["Price_consumer", "Price"]
+        return round(x, digits=3)
+        # Emissions and Welfare: 5 decimal places
+    elseif category in ["Emissions", "Welfare"]
+        return round(x, digits=5)
+        # Default: 2 decimal places
+    else
+        return round(x, digits=2)
     end
 end
 
-println("\n✓ All numeric values rounded to 2 decimal places")
+# Apply custom rounding
+for i in 1:nrow(df)
+    category = df[i, :Category]
+    variable = df[i, :Variable]
+
+    for col in names(df)
+        if col ∉ [:Category, :Variable, :Unit]
+            df[i, col] = round_value_custom(df[i, col], category, variable)
+        end
+    end
+end
+
+println("\n✓ Custom rounding applied:")
+println("  - Price_consumer: 3 decimal places")
+println("  - Emissions & Welfare: 5 decimal places")
+println("  - Others: 2 decimal places")
+
 output_file = "results_comprehensive.csv"
 CSV.write(output_file, df)
 
