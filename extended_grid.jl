@@ -804,7 +804,7 @@ display(p_food)
 savefig(p_food, "food_production_by_policy.png")
 
 # 결과 저장
-@save "extended_policy_results.jld2" all_results all_solutions results_df
+@save joinpath(OUTPUT_DIR, "extended_policy_results.jld2") all_results all_solutions results_df
 
 # welfare summary plot by policy type
 function plot_welfare_summary_by_policy(results_extended_analysis; vlines=nothing)
