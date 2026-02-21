@@ -10,13 +10,14 @@ using JLD2
 using JuMP
 using DataFrames
 using Printf
+const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
 
 # =================================================================================
 # 0. Configuration
 # =================================================================================
 
 # Target SAF quantity. Should be equivalent to "run_model.jl TARGET_SAF_VALUES"
-const TARGET_SAF_VALUES = [3.0, 6.0]  # 여러 타겟 분석 가능
+const TARGET_SAF_VALUES = [3.0, 6.0]
 
 # =================================================================================
 # Helper Functions
@@ -106,7 +107,7 @@ end
 # =================================================================================
 
 include(joinpath(@__DIR__, "welfare.jl"))
-@load "results_base_analysis.jld2" results_base_analysis
+@load joinpath(OUTPUT_DIR, "results_base_analysis.jld2") results_base_analysis
 status_quo = results_base_analysis[:statusquo]
 
 policy_types = [:carbontax, :rfs, :lcfs, :taxcredit]
@@ -128,15 +129,15 @@ for target_saf in TARGET_SAF_VALUES
     # =================================================================================
 
     if target_saf == 3.0
-        @load "results_target.jld2" equivalent_policies equivalent_solutions target_saf policy_configs_target
+        @load joinpath(OUTPUT_DIR, "results_target.jld2") equivalent_policies equivalent_solutions target_saf policy_configs_target
     elseif target_saf == 6.0
-        @load "results_target_6.jld2" equivalent_policies_6 equivalent_solutions_6 target_saf_6 policy_configs_target_6
+        @load joinpath(OUTPUT_DIR, "results_target_6.jld2") equivalent_policies_6 equivalent_solutions_6 target_saf_6 policy_configs_target_6
         equivalent_policies = equivalent_policies_6
         equivalent_solutions = equivalent_solutions_6
         target_saf = target_saf_6
         policy_configs_target = policy_configs_target_6
     else
-        filename = "results_target_$(Int(target_saf)).jld2"
+        filename = joinpath(OUTPUT_DIR, "results_target_$(Int(target_saf)).jld2")
         @load filename equivalent_policies equivalent_solutions target_saf policy_configs_target
     end
 
@@ -185,7 +186,7 @@ for target_saf in TARGET_SAF_VALUES
     )
 
     # Save initial results
-    @save "results_equivalent_emissions$(suffix).jld2" equivalent_emission_policies equivalent_emission_solutions target_total_emission policy_configs_emission
+    @save joinpath(OUTPUT_DIR, "results_equivalent_emissions$(suffix).jld2") equivalent_emission_policies equivalent_emission_solutions target_total_emission policy_configs_emission
 
     # =================================================================================
     # 5. Print Summary
@@ -537,7 +538,7 @@ for target_saf in TARGET_SAF_VALUES
     # 9. Save Complete Results
     # =================================================================================
 
-    @save "results_equivalent_emissions_complete$(suffix).jld2" equivalent_emission_policies equivalent_emission_solutions results_equiv_emission_analysis target_total_emission policy_configs_emission cs_changes_equiv_emission ps_land_equiv_emission gr_changes_equiv_emission env_benefits_equiv_emission welfare_summary_equiv_emission aac_equiv_emission SCC
+    @save joinpath(OUTPUT_DIR, "results_equivalent_emissions_complete$(suffix).jld2") equivalent_emission_policies equivalent_emission_solutions results_equiv_emission_analysis target_total_emission policy_configs_emission cs_changes_equiv_emission ps_land_equiv_emission gr_changes_equiv_emission env_benefits_equiv_emission welfare_summary_equiv_emission aac_equiv_emission SCC
 
     println("\n✓ Complete results saved to results_equivalent_emissions_complete$(suffix).jld2")
 
@@ -551,7 +552,7 @@ for target_saf in TARGET_SAF_VALUES
         :land_use => land_comparison_df
     )
 
-    @save "results_equivalent_emissions_tables$(suffix).jld2" comparison_tables
+    @save joinpath(OUTPUT_DIR, "results_equivalent_emissions_tables$(suffix).jld2") comparison_tables
 
     println("✓ Comparison tables saved to results_equivalent_emissions_tables$(suffix).jld2")
 end

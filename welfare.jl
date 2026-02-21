@@ -5,26 +5,7 @@ using JLD2
 using DataFrames
 using Printf
 using .SAFModel
-
-# =================================================================================
-# 1. Load results
-# =================================================================================
-
-# Base scenarios
-@load "results_base_analysis.jld2" results_base_analysis policy_configs_base
-
-# Target/Equivalent scenarios
-@load "results_equivalent_analysis.jld2" results_equivalent_analysis policy_configs_target equivalent_policies target_saf
-
-# Save separately: Status quo
-status_quo = results_base_analysis[:statusquo]
-
-sq_x = status_quo.x          # consumption
-sq_q = status_quo.q          # production
-sq_p_c = status_quo.p_c      # consumer prices
-sq_p_f = status_quo.p_f      # feedstock prices
-sq_l_n = status_quo.l_n      # conventional land
-sq_l_cs = status_quo.l_cs    # CS land
+const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
 
 
 # =================================================================================
@@ -145,36 +126,6 @@ function display_cs_changes(cs_changes_all; scenarios=nothing, title="CONSUMER S
     println("\n" * "="^130)
 end
 
-# Run consumer surplus analysis
-
-# Base scenarios
-cs_changes_base = calculate_cs_changes(
-    results_base_analysis,
-    status_quo,
-    params;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-)
-
-display_cs_changes(
-    cs_changes_base;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="BASE SCENARIOS: CONSUMER SURPLUS CHANGES (vs Status Quo, billion \$)"
-)
-
-# Target scenarios
-cs_changes_equivalent = calculate_cs_changes(
-    results_equivalent_analysis,
-    status_quo,
-    params;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-)
-
-display_cs_changes(
-    cs_changes_equivalent;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="EQUIVALENT SCENARIOS: CONSUMER SURPLUS CHANGES (Target SAF = $(target_saf) billion gallons, billion \$)"
-)
-
 
 # =====================
 # 2. LAND PRODUCER SURPLUS CHANGES
@@ -258,45 +209,6 @@ function display_ps_land_changes(ps_land_changes; scenarios=nothing,
 
     println("\n" * "="^130)
 end
-
-
-# =================================================================================
-# RUN LAND PRODUCER SURPLUS ANALYSIS
-# =================================================================================
-
-println("\n" * "="^80)
-println("LAND PRODUCER SURPLUS ANALYSIS")
-println("="^80)
-
-# Base scenarios
-ps_land_base = calculate_ps_land_changes(
-    results_base_analysis,
-    status_quo,
-    params;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-);
-
-display_ps_land_changes(
-    ps_land_base;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="BASE SCENARIOS: LAND PRODUCER SURPLUS CHANGES"
-)
-
-# Equivalent/Target scenarios
-ps_land_equivalent = calculate_ps_land_changes(
-    results_equivalent_analysis,
-    status_quo,
-    params;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-);
-
-display_ps_land_changes(
-    ps_land_equivalent;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="EQUIVALENT SCENARIOS: LAND PRODUCER SURPLUS CHANGES"
-)
-
-println("\n" * "="^80)
 
 
 # =====================
@@ -384,30 +296,6 @@ function display_gr_changes(gr_changes; scenarios=nothing, title="GOVERNMENT REV
     println("\n" * "="^80)
 end
 
-# run government revenue analysis
-# Base scenarios
-gr_changes_base = calculate_gr_changes(
-    results_base_analysis;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-)
-
-display_gr_changes(
-    gr_changes_base;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="BASE SCENARIOS: GOVERNMENT REVENUE CHANGES"
-)
-
-# Equivalent scenarios
-gr_changes_equivalent = calculate_gr_changes(
-    results_equivalent_analysis;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-)
-
-display_gr_changes(
-    gr_changes_equivalent;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="EQUIVALENT SCENARIOS: GOVERNMENT REVENUE CHANGES"
-)
 
 # =================================================================================
 # ENVIRONMENTAL BENEFIT ANALYSIS
@@ -503,41 +391,6 @@ function display_environmental_benefits(env_benefits, scc; scenarios=nothing,
     println("\n" * "="^130)
 end
 
-# run environmental benefit analysis
-# Social Cost of Carbon ($/ton CO2e)
-if !@isdefined(SCC)
-    const SCC = 190.0  # EPA 2023 central estimate
-end
-
-# Base scenarios
-env_benefits_base = calculate_environmental_benefit(
-    results_base_analysis,
-    status_quo,
-    SCC;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-)
-
-display_environmental_benefits(
-    env_benefits_base,
-    SCC;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="BASE SCENARIOS: ENVIRONMENTAL BENEFITS (vs Status Quo)"
-)
-
-# Equivalent/Target scenarios
-env_benefits_equivalent = calculate_environmental_benefit(
-    results_equivalent_analysis,
-    status_quo,
-    SCC;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-)
-
-display_environmental_benefits(
-    env_benefits_equivalent,
-    SCC;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="EQUIVALENT SCENARIOS: ENVIRONMENTAL BENEFITS (Target SAF = $(target_saf) billion gallons)"
-)
 
 # =============================================================
 # 4) TOTAL WELFARE CALCULATION
@@ -617,36 +470,6 @@ function display_welfare_summary(welfare_summary; scenarios=nothing,
     println("\n" * "="^130)
 end
 
-# Run total welfare analysis
-# Base scenarios
-welfare_summary_base = calculate_total_welfare(
-    cs_changes_base,
-    ps_land_base,
-    gr_changes_base,
-    env_benefits_base;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-)
-
-display_welfare_summary(
-    welfare_summary_base;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="BASE SCENARIOS: WELFARE SUMMARY (vs Status Quo)"
-)
-
-# Equivalent/Target scenarios
-welfare_summary_equivalent = calculate_total_welfare(
-    cs_changes_equivalent,
-    ps_land_equivalent,
-    gr_changes_equivalent,
-    env_benefits_equivalent;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-)
-
-display_welfare_summary(
-    welfare_summary_equivalent;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="EQUIVALENT SCENARIOS: WELFARE SUMMARY (Target SAF = $(target_saf) billion gallons)"
-)
 
 # =============================================================
 # 3. AVERAGE ABATEMENT COST CALCULATION
@@ -751,55 +574,143 @@ function display_aac_analysis(aac_results; scenarios=nothing,
     println("\n" * "="^130)
 end
 
-# =================================================================================
-# RUN AVERAGE ABATEMENT COST ANALYSIS
-# =================================================================================
-
-println("\n" * "="^80)
-println("AVERAGE ABATEMENT COST ANALYSIS")
-println("="^80)
-
-# Base scenarios
-aac_results_base = calculate_average_abatement_cost(
-    welfare_summary_base,
-    results_base_analysis,
-    status_quo;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-)
-
-display_aac_analysis(
-    aac_results_base;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="BASE SCENARIOS: AVERAGE ABATEMENT COST"
-)
-
-# Equivalent/Target scenarios
-aac_results_equivalent = calculate_average_abatement_cost(
-    welfare_summary_equivalent,
-    results_equivalent_analysis,
-    status_quo;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
-)
-
-display_aac_analysis(
-    aac_results_equivalent;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="EQUIVALENT SCENARIOS: AVERAGE ABATEMENT COST (Target SAF = $(target_saf) billion gallons)"
-)
-
-println("\n" * "="^80)
 
 # =================================================================================
-# 4. SAVE COMPLETE RESULTS WITH ALL WELFARE ANALYSIS
+# 4. Run and Save
 # =================================================================================
+
+# 1) Base scenarios
+@load joinpath(OUTPUT_DIR, "results_base_analysis.jld2") results_base_analysis policy_configs_base
 
 # Status quo
 status_quo = results_base_analysis[:statusquo]
 
-# Save complete base analysis
-@save "results_base_complete.jld2" results_base_analysis policy_configs_base status_quo cs_changes_base ps_land_base gr_changes_base env_benefits_base welfare_summary_base aac_results_base
+cs_changes_base = calculate_cs_changes(
+    results_base_analysis, status_quo, params;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+)
+display_cs_changes(cs_changes_base;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+    title="BASE SCENARIOS: CONSUMER SURPLUS CHANGES (vs Status Quo, billion \$)")
 
-# Save complete target/equivalent analysis
-@save "results_target_complete.jld2" results_equivalent_analysis policy_configs_target status_quo cs_changes_equivalent ps_land_equivalent gr_changes_equivalent env_benefits_equivalent target_saf welfare_summary_equivalent aac_results_equivalent
+ps_land_base = calculate_ps_land_changes(
+    results_base_analysis, status_quo, params;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+)
+display_ps_land_changes(ps_land_base;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+    title="BASE SCENARIOS: LAND PRODUCER SURPLUS CHANGES")
+
+gr_changes_base = calculate_gr_changes(
+    results_base_analysis;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+)
+display_gr_changes(gr_changes_base;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+    title="BASE SCENARIOS: GOVERNMENT REVENUE CHANGES")
+
+SCC = 190
+env_benefits_base = calculate_environmental_benefit(
+    results_base_analysis, status_quo, SCC;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+)
+display_environmental_benefits(env_benefits_base, SCC;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+    title="BASE SCENARIOS: ENVIRONMENTAL BENEFITS (vs Status Quo)")
+
+welfare_summary_base = calculate_total_welfare(
+    cs_changes_base, ps_land_base, gr_changes_base, env_benefits_base;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+)
+display_welfare_summary(welfare_summary_base;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+    title="BASE SCENARIOS: WELFARE SUMMARY (vs Status Quo)")
+
+aac_results_base = calculate_average_abatement_cost(
+    welfare_summary_base, results_base_analysis, status_quo;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+)
+display_aac_analysis(aac_results_base;
+    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+    title="BASE SCENARIOS: AVERAGE ABATEMENT COST")
+
+@save joinpath(OUTPUT_DIR, "results_base_welfare.jld2") results_base_analysis policy_configs_base status_quo cs_changes_base ps_land_base gr_changes_base env_benefits_base welfare_summary_base aac_results_base
+println("✓ Saved results_base_welfare.jld2")
+
+# 2) Target SAF Welfare Analysis (3B and 6B)
 
 
+const TARGET_SAF_VALUES = [3.0, 6.0]
+
+for target_saf in TARGET_SAF_VALUES
+    suffix = target_saf == 3.0 ? "" : "_$(Int(target_saf))"
+
+    println("\n" * "="^130)
+    println("TARGET SAF = $(target_saf)B WELFARE ANALYSIS")
+    println("="^130)
+
+    # Load
+    if target_saf == 3.0
+        @load joinpath(OUTPUT_DIR, "results_equivalent_analysis.jld2") results_equivalent_analysis policy_configs_target equivalent_policies target_saf
+    else
+        file_data = load(joinpath(OUTPUT_DIR, "results_equivalent_analysis_6.jld2"))
+        results_equivalent_analysis = file_data["results_equivalent_analysis"]
+        policy_configs_target = file_data["policy_configs_target"]
+        equivalent_policies = file_data["equivalent_policies"]
+        target_saf = file_data["target_saf"]
+    end
+    println("✓ Loaded results_equivalent_analysis$(suffix).jld2")
+
+    # Welfare analysis
+    cs_changes_equivalent = calculate_cs_changes(
+        results_equivalent_analysis, status_quo, params;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+    )
+    display_cs_changes(cs_changes_equivalent;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+        title="EQUIVALENT SCENARIOS: CONSUMER SURPLUS CHANGES (Target SAF = $(target_saf)B, billion \$)")
+
+    ps_land_equivalent = calculate_ps_land_changes(
+        results_equivalent_analysis, status_quo, params;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+    )
+    display_ps_land_changes(ps_land_equivalent;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+        title="EQUIVALENT SCENARIOS: LAND PRODUCER SURPLUS CHANGES (Target SAF = $(target_saf)B)")
+
+    gr_changes_equivalent = calculate_gr_changes(
+        results_equivalent_analysis;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+    )
+    display_gr_changes(gr_changes_equivalent;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+        title="EQUIVALENT SCENARIOS: GOVERNMENT REVENUE CHANGES (Target SAF = $(target_saf)B)")
+
+    env_benefits_equivalent = calculate_environmental_benefit(
+        results_equivalent_analysis, status_quo, SCC;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+    )
+    display_environmental_benefits(env_benefits_equivalent, SCC;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+        title="EQUIVALENT SCENARIOS: ENVIRONMENTAL BENEFITS (Target SAF = $(target_saf)B)")
+
+    welfare_summary_equivalent = calculate_total_welfare(
+        cs_changes_equivalent, ps_land_equivalent, gr_changes_equivalent, env_benefits_equivalent;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+    )
+    display_welfare_summary(welfare_summary_equivalent;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+        title="EQUIVALENT SCENARIOS: WELFARE SUMMARY (Target SAF = $(target_saf)B)")
+
+    aac_results_equivalent = calculate_average_abatement_cost(
+        welfare_summary_equivalent, results_equivalent_analysis, status_quo;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit]
+    )
+    display_aac_analysis(aac_results_equivalent;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+        title="EQUIVALENT SCENARIOS: AVERAGE ABATEMENT COST (Target SAF = $(target_saf)B)")
+
+    # Save
+    @save joinpath(OUTPUT_DIR, "results_target_welfare$(suffix).jld2") results_equivalent_analysis policy_configs_target status_quo cs_changes_equivalent ps_land_equivalent gr_changes_equivalent env_benefits_equivalent target_saf welfare_summary_equivalent aac_results_equivalent
+    println("✓ Saved results_target_welfare$(suffix).jld2")
+end

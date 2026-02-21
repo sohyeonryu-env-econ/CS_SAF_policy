@@ -12,12 +12,13 @@ using DataFrames
 using Printf
 using Plots
 using JuMP
+const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
 
 # =================================================================================
 # 1. Load Status Quo from Base Analysis
 # =================================================================================
 
-@load "results_base_complete.jld2" status_quo
+@load joinpath(OUTPUT_DIR, "results_base_welfare.jld2") status_quo
 
 println("\nStatus quo emissions (billion ton CO2e):")
 println("  Aviation: ", status_quo.emissions.aviation)
@@ -287,11 +288,34 @@ mac_extended = calculate_mac_extended(results_extended_analysis)
 
 # Plotting
 using Plots
+
+# ── ep_3B, ep_6B 먼저 로드 ──────────────────────────────────────────────
+@load joinpath(OUTPUT_DIR, "results_equivalent_emissions.jld2") equivalent_emission_policies
+ep_3B = equivalent_emission_policies
+
+@load joinpath(OUTPUT_DIR, "results_equivalent_emissions_6.jld2") equivalent_emission_policies
+ep_6B = equivalent_emission_policies
+
+# ── vlines 계산 ──────────────────────────────────────────────────────────
+statusquo_em = results_extended_analysis.solutions[:statusquo].emissions.total
+
+abatement_3B = statusquo_em - ep_3B[:rfs].actual_emission
+abatement_6B = statusquo_em - ep_6B[:rfs].actual_emission
+
+vlines_abatement = [(abatement_3B, "3B"), (abatement_6B, "6B")]
+
+vlines_data = Dict(
+    :carbontax => [(ep_3B[:carbontax].policy_value, "3B"), (ep_6B[:carbontax].policy_value, "6B")],
+    :rfs => [(ep_3B[:rfs].policy_value, "3B"), (ep_6B[:rfs].policy_value, "6B")],
+    :lcfs => [(ep_3B[:lcfs].policy_value, "3B"), (ep_6B[:lcfs].policy_value, "6B")],
+    :taxcredit => [(ep_3B[:taxcredit].policy_value, "3B"), (ep_6B[:taxcredit].policy_value, "6B")],
+)
+
+# ── MAC plot 함수 정의 (vlines_abatement 버전 하나만 유지) ────────────────
 function plot_mac_comparison(results_extended_analysis, mac_extended; vlines_abatement=nothing)
     solutions = results_extended_analysis.solutions
     statusquo_emission = solutions[:statusquo].emissions.total
-
-    max_abatement = 0.15 # Billion tons
+    max_abatement = 0.15
 
     p = plot(layout=(1, 2), size=(1600, 600),
         plot_title="Marginal Abatement Cost Curves Comparison",
@@ -352,7 +376,6 @@ function plot_mac_comparison(results_extended_analysis, mac_extended; vlines_aba
     hline!(p[1], [0], color=:gray, linestyle=:dot, label="", alpha=0.5)
     hline!(p[2], [0], color=:gray, linestyle=:dot, label="", alpha=0.5)
 
-    # ── 3B / 6B 세로선 추가 ──────────────────────────────────────────────
     if !isnothing(vlines_abatement)
         vline_colors = [:darkred, :darkblue]
         for (j, (abatement_val, vlabel)) in enumerate(vlines_abatement)
@@ -363,114 +386,13 @@ function plot_mac_comparison(results_extended_analysis, mac_extended; vlines_aba
             annotate!(p[2], abatement_val, 460, text(vlabel, c, :center, 9))
         end
     end
-    # ─────────────────────────────────────────────────────────────────────
 
     return p
 end
 
-# ── vlines_abatement 계산 ────────────────────────────────────────────────
-# RFS 기준 abatement (3B, 6B 모두 RFS emissions 기준으로 통일)
-statusquo_em = results_extended_analysis.solutions[:statusquo].emissions.total
-
-abatement_3B = statusquo_em - ep_3B[:rfs].actual_emission
-abatement_6B = statusquo_em - ep_6B[:rfs].actual_emission
-
-vlines_abatement = [(abatement_3B, "3B"), (abatement_6B, "6B")]
-
-# Generate plot
+# ── Generate MAC plot ─────────────────────────────────────────────────────
 p_mac_comparison = plot_mac_comparison(results_extended_analysis, mac_extended;
     vlines_abatement=vlines_abatement)
-
-function plot_mac_comparison(results_extended_analysis, mac_extended)
-    solutions = results_extended_analysis.solutions
-    statusquo_emission = solutions[:statusquo].emissions.total
-
-    max_abatement = 0.04  # Billion tons
-
-    p = plot(layout=(1, 2), size=(1600, 600),
-        plot_title="Marginal Abatement Cost Curves Comparison",
-        left_margin=5Plots.mm, bottom_margin=5Plots.mm)
-
-    policy_info = Dict(
-        :carbontax => (label="Carbon Tax", color=:blue, marker=:circle),
-        :rfs => (label="RFS Aviation", color=:red, marker=:diamond),
-        :lcfs => (label="LCFS", color=:green, marker=:square),
-        :taxcredit => (label="Tax Credit", color=:purple, marker=:utriangle)
-    )
-
-    for policy_type in [:carbontax, :rfs, :lcfs, :taxcredit]
-        mac_data = mac_extended[policy_type]
-
-        if isempty(mac_data)
-            continue
-        end
-
-        abatement_values = Float64[]
-        mac_private_values = Float64[]
-        mac_social_values = Float64[]
-
-        data_iter = policy_type == :taxcredit ? mac_data[2:end] : mac_data
-
-        for d in data_iter
-            abatement = statusquo_emission - d.emission
-            if abatement <= max_abatement
-                push!(abatement_values, abatement)
-                push!(mac_private_values, d.mac_private)
-                push!(mac_social_values, d.mac_social)
-            end
-        end
-
-        if isempty(abatement_values)
-            continue
-        end
-
-        sorted_indices = sortperm(abatement_values)
-        abatement_sorted = abatement_values[sorted_indices]
-        mac_private_sorted = mac_private_values[sorted_indices]
-        mac_social_sorted = mac_social_values[sorted_indices]
-
-        info = policy_info[policy_type]
-
-        # Private MAC
-        plot!(p[1], abatement_sorted, mac_private_sorted,
-            label=info.label,
-            #marker=info.marker,
-            #markersize=5,
-            linewidth=2.5,
-            color=info.color,
-            xlabel="Cumulative Abatement (Billion tons CO2)",
-            ylabel="MAC (\$/ton CO2)",
-            title="Private MAC",
-            legend=:topleft,
-            xlims=(0, max_abatement),
-            ylims=(-100, 700))
-
-        # Social MAC
-        plot!(p[2], abatement_sorted, mac_social_sorted,
-            label=info.label,
-            #marker=info.marker,
-            #markersize=5,
-            linewidth=2.5,
-            color=info.color,
-            xlabel="Cumulative Abatement (Billion tons CO2)",
-            ylabel="MAC (\$/ton CO2)",
-            title="Social MAC",
-            legend=:topleft,
-            xlims=(0, max_abatement),
-            ylims=(-500, 500))
-    end
-
-    # Add zero line
-    hline!(p[1], [0], color=:gray, linestyle=:dot, label="", alpha=0.5)
-    hline!(p[2], [0], color=:gray, linestyle=:dot, label="", alpha=0.5)
-
-    return p
-end
-
-# Generate plot
-p_mac_comparison = plot_mac_comparison(results_extended_analysis, mac_extended)
-
-
 
 # =====================
 # Plot the extended grid results
@@ -1063,7 +985,6 @@ end
 
 # Generate plot
 p_emissions = plot_emissions_by_policy(results_extended_analysis; vlines=vlines_data)
-
 
 
 # Stacked quantity figure

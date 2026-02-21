@@ -179,44 +179,6 @@ c0_vec = [
     2.435,              # 6. diesel
     1.0               # 7. biodiesel (shared by soy and nonsoy biodiesel)
 ]
-#=
-#LOW
-c0_vec = [
-    2.338,  # 1. jet_fuel
-    1.0,               # 2. saf_atj (shared by conv & cs ATJ SAF)
-    0.44,               # 3. saf_hefa (shared by conv, cs, nonsoy HEFA SAF, rd_soy, rd_nonsoy)
-    2.7,               # 4. gasoline
-    0.23,                # 5. ethanol
-    2.435,              # 6. diesel
-    0.16,               # 7. biodiesel_soy
-    0.16                # 8. biodiesel_nonsoy
-]
-#Medium
-c0_vec = [
-    0.0575 * 20.3386,  # 1. jet_fuel
-    3.97,               # 2. saf_atj (shared by conv & cs ATJ SAF)
-    1.44,               # 3. saf_hefa (shared by conv, cs, nonsoy HEFA SAF, rd_soy, rd_nonsoy)
-    1.35,               # 4. gasoline
-    0.0,                # 5. ethanol
-    1.218,              # 6. diesel
-    1.16,               # 7. biodiesel_soy
-    1.16                # 8. biodiesel_nonsoy
-]
-
-
-
-#HIGH
-c0_vec = [
-    2.338,  # 1. jet_fuel
-    4.97,               # 2. saf_atj (shared by conv & cs ATJ SAF)
-    1.56,               # 3. saf_hefa (shared by conv, cs, nonsoy HEFA SAF, rd_soy, rd_nonsoy)
-    2.7,               # 4. gasoline
-    0.23,                # 5. ethanol
-    2.435,              # 6. diesel
-    1.0,               # 7. biodiesel_soy
-    1.0                # 8. biodiesel_nonsoy
-]
-=#
 
 c1_vec = [
     0.0,  # 1. jet_fuel

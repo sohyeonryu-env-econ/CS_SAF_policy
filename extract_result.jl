@@ -5,12 +5,14 @@ using JLD2
 using DataFrames
 using CSV
 using JuMP
+const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
+
 
 # =================================================================================
 # 1. Load results
 # =================================================================================
 # Status quo and the first-best carbon tax
-@load "results_base_complete.jld2" results_base_analysis policy_configs_base status_quo cs_changes_base ps_land_base gr_changes_base env_benefits_base welfare_summary_base aac_results_base
+@load joinpath(OUTPUT_DIR, "results_base_welfare.jld2") results_base_analysis policy_configs_base status_quo cs_changes_base ps_land_base gr_changes_base env_benefits_base welfare_summary_base aac_results_base
 
 # define observed and validation scenarios
 observed_data = Dict(
@@ -103,9 +105,9 @@ for target_saf in TARGET_SAF_VALUES
     println("Loading results for target SAF = $(target_saf)B...")
 
     if target_saf == 3.0
-        @load "results_equivalent_emissions_complete.jld2" equivalent_emission_policies equivalent_emission_solutions results_equiv_emission_analysis target_total_emission policy_configs_emission cs_changes_equiv_emission ps_land_equiv_emission gr_changes_equiv_emission env_benefits_equiv_emission welfare_summary_equiv_emission aac_equiv_emission SCC
+        @load joinpath(OUTPUT_DIR, "results_equivalent_emissions_complete.jld2") equivalent_emission_policies equivalent_emission_solutions results_equiv_emission_analysis target_total_emission policy_configs_emission cs_changes_equiv_emission ps_land_equiv_emission gr_changes_equiv_emission env_benefits_equiv_emission welfare_summary_equiv_emission aac_equiv_emission SCC
     else
-        filename = "results_equivalent_emissions_complete$(suffix).jld2"
+        filename = joinpath(OUTPUT_DIR, "results_equivalent_emissions_complete$(suffix).jld2")
         file_data = load(filename)
 
         equivalent_emission_policies = file_data["equivalent_emission_policies"]
@@ -782,7 +784,7 @@ println("  - Price_consumer: 3 decimal places")
 println("  - Emissions & Welfare: 5 decimal places")
 println("  - Others: 2 decimal places")
 
-output_file = "results_comprehensive.csv"
+output_file = joinpath(OUTPUT_DIR, "results_comprehensive.csv")
 CSV.write(output_file, df)
 
 println("\n" * "="^80)

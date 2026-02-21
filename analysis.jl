@@ -8,6 +8,7 @@ import .SAFModel: params, FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS, tax_credit_ra
 using JLD2;
 using DataFrames;
 using Printf;
+const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
 
 # =================================================================================
 # 1. Functions for Displaying Comparison Tables and individual Tables
@@ -599,7 +600,7 @@ println("\n" * "="^130)
 println("LOADING BASE AND STATUS QUO SCENARIOS")
 println("="^130)
 
-@load "results_base.jld2" results_base policy_configs_base
+@load joinpath(OUTPUT_DIR, "results_base.jld2") results_base policy_configs_base
 println("✓ Loaded base results")
 
 display_comparison_tables(
@@ -610,67 +611,73 @@ display_comparison_tables(
     title="BASE SCENARIO RESULTS"
 )
 
-# =====================
-# PART 2: TARGET SAF
-# =====================
-println("\n" * "="^130)
-println("LOADING TARGET SAF ANALYSIS")
-println("="^130)
-
-@load "results_target.jld2" equivalent_policies equivalent_solutions target_saf policy_configs_target
-println("✓ Loaded target SAF results")
-
-display_comparison_tables(
-    equivalent_solutions,
-    params,
-    policy_configs_target;
-    scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
-    title="EQUIVALENT POLICY COMPARISON (Target SAF = $(target_saf) billion gallons)",
-    show_policy_params=true,  # ⭐ Policy parameters 표시
-    equivalent_policies=equivalent_policies  # ⭐ Policy 데이터 전달
-)
-
-
-# =================================================================================
-# 3. Save the results (implicit taxes, emissions)
-# =================================================================================
-
-# Base scenarios
+# Save base analysis
 implicit_taxes_base = calculate_all_implicit_taxes(results_base, params, policy_configs_base)
 
 results_base_analysis = Dict()
 for (scenario, solution) in results_base
     emissions = calculate_emissions_detail(solution, params)
-
     results_base_analysis[scenario] = merge(
         solution,
         (
             implicit_taxes=implicit_taxes_base[scenario],
             emissions=emissions
-            # I can add more analysis data here in the future...
         )
     )
 end
 
-@save "results_base_analysis.jld2" results_base_analysis policy_configs_base
+@save joinpath(OUTPUT_DIR, "results_base_analysis.jld2") results_base_analysis policy_configs_base
+println("✓ Saved results_base_analysis.jld2")
 
-# Target/Equivalent scenarios
-implicit_taxes_equivalent = calculate_all_implicit_taxes(equivalent_solutions, params, policy_configs_target)
+# =====================
+# 2) TARGET SAF (3B and 6B)
+# =====================
+println("\n" * "="^130)
+println("LOADING TARGET SAF ANALYSIS")
+println("="^130)
 
-results_equivalent_analysis = Dict()
-for (scenario, solution) in equivalent_solutions
-    emissions = calculate_emissions_detail(solution, params)
+const TARGET_SAF_VALUES = [3.0, 6.0]
 
-    results_equivalent_analysis[scenario] = merge(
-        solution,
-        (
-            implicit_taxes=implicit_taxes_equivalent[scenario],
-            emissions=emissions
-        )
+for target_saf in TARGET_SAF_VALUES
+    suffix = target_saf == 3.0 ? "" : "_$(Int(target_saf))"
+
+    # Load
+    if target_saf == 3.0
+        @load joinpath(OUTPUT_DIR, "results_target.jld2") equivalent_policies equivalent_solutions target_saf policy_configs_target
+    else
+        file_data = load(joinpath(OUTPUT_DIR, "results_target_6.jld2"))
+        equivalent_policies = file_data["equivalent_policies_6"]
+        equivalent_solutions = file_data["equivalent_solutions_6"]
+        policy_configs_target = file_data["policy_configs_target_6"]
+        target_saf = file_data["target_saf_6"]
+    end
+    println("✓ Loaded target SAF ($(target_saf)B) results")
+
+    display_comparison_tables(
+        equivalent_solutions,
+        params,
+        policy_configs_target;
+        scenarios=[:carbontax, :rfs, :lcfs, :taxcredit],
+        title="EQUIVALENT POLICY COMPARISON (Target SAF = $(target_saf) billion gallons)",
+        show_policy_params=true,
+        equivalent_policies=equivalent_policies
     )
+
+    # Save
+    implicit_taxes_equivalent = calculate_all_implicit_taxes(equivalent_solutions, params, policy_configs_target)
+
+    results_equivalent_analysis = Dict()
+    for (scenario, solution) in equivalent_solutions
+        emissions = calculate_emissions_detail(solution, params)
+        results_equivalent_analysis[scenario] = merge(
+            solution,
+            (
+                implicit_taxes=implicit_taxes_equivalent[scenario],
+                emissions=emissions
+            )
+        )
+    end
+
+    @save joinpath(OUTPUT_DIR, "results_equivalent_analysis$(suffix).jld2") results_equivalent_analysis policy_configs_target equivalent_policies target_saf
+    println("✓ Saved results_equivalent_analysis$(suffix).jld2")
 end
-
-@save "results_equivalent_analysis.jld2" results_equivalent_analysis policy_configs_target equivalent_policies target_saf
-
-
-

@@ -10,6 +10,7 @@ Pkg.add("JLD2");
 using JLD2;
 using JuMP;
 
+const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
 
 # =================================================================================
 # 1. Run Base Scenarios (status quo + example policies)
@@ -34,7 +35,7 @@ for scenario in [:statusquo, :carbontax, :rfs, :lcfs, :taxcredit]
 end
 
 # save results
-@save "results_base.jld2" results_base policy_configs_base
+@save joinpath(OUTPUT_DIR, "results_base.jld2") results_base policy_configs_base
 println("\n✓ Base results saved to results_base.jld2")
 
 # =================================================================================
@@ -118,7 +119,6 @@ end
 # Run target SAF analysis
 const TARGET_SAF_VALUES = [3.0, 6.0]
 
-#target_saf = 3.0
 policy_types = [:carbontax, :rfs, :lcfs, :taxcredit]
 
 for target_saf in TARGET_SAF_VALUES
@@ -150,7 +150,8 @@ for target_saf in TARGET_SAF_VALUES
 
     # Save with appropriate naming
     if target_saf == 3.0
-        @save "results_target.jld2" equivalent_policies equivalent_solutions target_saf policy_configs_target
+        @save joinpath(OUTPUT_DIR, "results_target.jld2") equivalent_policies equivalent_solutions target_saf policy_configs_target
+
         println("\n✓ Target SAF (3B) results saved to results_target.jld2")
     else
         # 변수명에 suffix 추가
@@ -160,7 +161,7 @@ for target_saf in TARGET_SAF_VALUES
         policy_configs_target_var = policy_configs_target
 
         if target_saf == 6.0
-            @save "results_target_6.jld2" equivalent_policies_6 = equivalent_policies equivalent_solutions_6 = equivalent_solutions target_saf_6 = target_saf policy_configs_target_6 = policy_configs_target
+            @save joinpath(OUTPUT_DIR, "results_target_6.jld2") equivalent_policies_6 = equivalent_policies equivalent_solutions_6 = equivalent_solutions target_saf_6 = target_saf policy_configs_target_6 = policy_configs_target
             println("\n✓ Target SAF (6B) results saved to results_target_6.jld2")
         else
             filename = "results_target_$(Int(target_saf)).jld2"
