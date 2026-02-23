@@ -17,7 +17,7 @@ const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-Univers
 # =================================================================================
 
 # Target SAF quantity. Should be equivalent to "run_model.jl TARGET_SAF_VALUES"
-const TARGET_SAF_VALUES = [3.0, 6.0]
+const TARGET_SAF_VALUES = [3.0, 5.0]
 
 # =================================================================================
 # Helper Functions
@@ -25,7 +25,7 @@ const TARGET_SAF_VALUES = [3.0, 6.0]
 include(joinpath(@__DIR__, "analysis.jl"))
 
 function find_policy_for_target_emissions(target_emission, params, policy_type;
-    tolerance=0.0001, max_iterations=100)
+    tolerance=0.0001, max_iterations=200)
 
     search_ranges = Dict(
         :carbontax => (0.0, 500.0, :t),
@@ -130,12 +130,12 @@ for target_saf in TARGET_SAF_VALUES
 
     if target_saf == 3.0
         @load joinpath(OUTPUT_DIR, "results_target.jld2") equivalent_policies equivalent_solutions target_saf policy_configs_target
-    elseif target_saf == 6.0
-        @load joinpath(OUTPUT_DIR, "results_target_6.jld2") equivalent_policies_6 equivalent_solutions_6 target_saf_6 policy_configs_target_6
-        equivalent_policies = equivalent_policies_6
-        equivalent_solutions = equivalent_solutions_6
-        target_saf = target_saf_6
-        policy_configs_target = policy_configs_target_6
+    elseif target_saf == 5.0
+        @load joinpath(OUTPUT_DIR, "results_target_5.jld2") equivalent_policies_5 equivalent_solutions_5 target_saf_5 policy_configs_target_5
+        equivalent_policies = equivalent_policies_5
+        equivalent_solutions = equivalent_solutions_5
+        target_saf = target_saf_5
+        policy_configs_target = policy_configs_target_5
     else
         filename = joinpath(OUTPUT_DIR, "results_target_$(Int(target_saf)).jld2")
         @load filename equivalent_policies equivalent_solutions target_saf policy_configs_target
@@ -148,6 +148,7 @@ for target_saf in TARGET_SAF_VALUES
     rfs_solution = equivalent_solutions[:rfs]
     rfs_emissions = calculate_emissions_detail(rfs_solution, params)
     target_total_emission = rfs_emissions.total
+    println("RFS actual SAF = ", sum(rfs_solution.q[g] for g in [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]))
 
     println("\n--- Target Emissions from RFS ($(target_saf)B SAF) ---")
     println("  Aviation: $(round(rfs_emissions.aviation, digits=3)) Billion ton CO2e")
@@ -166,19 +167,35 @@ for target_saf in TARGET_SAF_VALUES
     equivalent_emission_policies = Dict()
 
     for policy_type in policy_types
-        println("\n--- Finding $policy_type ---")
-        result = find_policy_for_target_emissions(target_total_emission, params, policy_type)
-        equivalent_emission_policies[policy_type] = result
+        if policy_type == :rfs
+            # run_model.jl의 RFS 결과를 그대로 사용
+            rfs_result = equivalent_policies[:rfs]  # 이미 위에서 로드한 값
+            equivalent_emission_policies[:rfs] = (
+                policy_value=rfs_result.config.θ_avi,
+                model=nothing,  # 모델 객체는 저장 안 됨
+                actual_emission=target_total_emission,
+                config=rfs_result.config
+            )
+        else
+            println("\n--- Finding $policy_type ---")
+            result = find_policy_for_target_emissions(target_total_emission, params, policy_type)
+            equivalent_emission_policies[policy_type] = result
+        end
     end
 
     # =================================================================================
     # 4. Extract Solutions
     # =================================================================================
 
-    equivalent_emission_solutions = Dict(
-        policy_type => extract_solution(result.model, policy_type)
-        for (policy_type, result) in equivalent_emission_policies
-    )
+    equivalent_emission_solutions = Dict()
+    for (policy_type, result) in equivalent_emission_policies
+        if policy_type == :rfs
+            # run_model.jl에서 로드한 solution 그대로 사용
+            equivalent_emission_solutions[:rfs] = equivalent_solutions[:rfs]
+        else
+            equivalent_emission_solutions[policy_type] = extract_solution(result.model, policy_type)
+        end
+    end
 
     policy_configs_emission = NamedTuple(
         policy_type => result.config

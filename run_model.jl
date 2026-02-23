@@ -43,7 +43,7 @@ println("\n✓ Base results saved to results_base.jld2")
 # =================================================================================
 
 # Find policy stringency function
-function find_policy_for_target_saf(target_saf, params, policy_type; tolerance=0.001)
+function find_policy_for_target_saf(target_saf, params, policy_type; tolerance=0.0001)
     SAF_GOODS = [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
 
     search_ranges = Dict(
@@ -54,10 +54,10 @@ function find_policy_for_target_saf(target_saf, params, policy_type; tolerance=0
     )
 
     low, high, param_name = search_ranges[policy_type]
-    max_iterations = 100
+    max_iterations = 200
     iteration = 0
 
-    while iteration < max_iterations && (high - low) > 0.0001
+    while iteration < max_iterations && (high - low) > 0.00001
         iteration += 1
         mid = (low + high) / 2.0
 
@@ -81,10 +81,10 @@ function find_policy_for_target_saf(target_saf, params, policy_type; tolerance=0
         end
 
         total_saf = sum(value(model[:q][g]) for g in SAF_GOODS)
-        println("  Iteration $iteration: $param_name = $(round(mid, digits=3)), SAF = $(round(total_saf, digits=3))")
+        println("  Iteration $iteration: $param_name = $(round(mid, digits=7)), SAF = $(round(total_saf, digits=7))")
 
         if abs(total_saf - target_saf) < tolerance
-            println("  ✓ Found solution: $param_name = $(round(mid, digits=3))")
+            println("  ✓ Found solution: $param_name = $(round(mid, digits=7))")
             return (policy_value=mid, model=model, actual_saf=total_saf, config=config)
         end
 
@@ -117,7 +117,7 @@ end
 
 # Multiple Target
 # Run target SAF analysis
-const TARGET_SAF_VALUES = [3.0, 6.0]
+const TARGET_SAF_VALUES = [3.0, 5.0]
 
 policy_types = [:carbontax, :rfs, :lcfs, :taxcredit]
 
@@ -160,9 +160,9 @@ for target_saf in TARGET_SAF_VALUES
         equivalent_solutions_var = equivalent_solutions
         policy_configs_target_var = policy_configs_target
 
-        if target_saf == 6.0
-            @save joinpath(OUTPUT_DIR, "results_target_6.jld2") equivalent_policies_6 = equivalent_policies equivalent_solutions_6 = equivalent_solutions target_saf_6 = target_saf policy_configs_target_6 = policy_configs_target
-            println("\n✓ Target SAF (6B) results saved to results_target_6.jld2")
+        if target_saf == 5.0
+            @save joinpath(OUTPUT_DIR, "results_target_5.jld2") equivalent_policies_5 = equivalent_policies equivalent_solutions_5 = equivalent_solutions target_saf_5 = target_saf policy_configs_target_5 = policy_configs_target
+            println("\n✓ Target SAF (5B) results saved to results_target_5.jld2")
         else
             filename = "results_target_$(Int(target_saf)).jld2"
             @save filename equivalent_policies equivalent_solutions target_saf policy_configs_target

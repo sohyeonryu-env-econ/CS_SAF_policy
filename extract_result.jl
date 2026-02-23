@@ -98,7 +98,7 @@ validation_data = Dict(
 # 각 타겟별 결과를 저장할 Dictionary
 all_target_results = Dict()
 
-const TARGET_SAF_VALUES = [3.0, 6.0]  # 타겟 SAF 양 (3B, 5B gallons)
+const TARGET_SAF_VALUES = [3.0, 5.0]  # 타겟 SAF 양 (3B, 5B gallons)
 for target_saf in TARGET_SAF_VALUES
     suffix = target_saf == 3.0 ? "" : "_$(Int(target_saf))"
 

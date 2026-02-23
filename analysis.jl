@@ -630,13 +630,13 @@ end
 println("✓ Saved results_base_analysis.jld2")
 
 # =====================
-# 2) TARGET SAF (3B and 6B)
+# 2) TARGET SAF (3B and 5B)
 # =====================
 println("\n" * "="^130)
 println("LOADING TARGET SAF ANALYSIS")
 println("="^130)
 
-const TARGET_SAF_VALUES = [3.0, 6.0]
+const TARGET_SAF_VALUES = [3.0, 5.0]
 
 for target_saf in TARGET_SAF_VALUES
     suffix = target_saf == 3.0 ? "" : "_$(Int(target_saf))"
@@ -645,11 +645,11 @@ for target_saf in TARGET_SAF_VALUES
     if target_saf == 3.0
         @load joinpath(OUTPUT_DIR, "results_target.jld2") equivalent_policies equivalent_solutions target_saf policy_configs_target
     else
-        file_data = load(joinpath(OUTPUT_DIR, "results_target_6.jld2"))
-        equivalent_policies = file_data["equivalent_policies_6"]
-        equivalent_solutions = file_data["equivalent_solutions_6"]
-        policy_configs_target = file_data["policy_configs_target_6"]
-        target_saf = file_data["target_saf_6"]
+        file_data = load(joinpath(OUTPUT_DIR, "results_target_5.jld2"))
+        equivalent_policies = file_data["equivalent_policies_5"]
+        equivalent_solutions = file_data["equivalent_solutions_5"]
+        policy_configs_target = file_data["policy_configs_target_5"]
+        target_saf = file_data["target_saf_5"]
     end
     println("✓ Loaded target SAF ($(target_saf)B) results")
 

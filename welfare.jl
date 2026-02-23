@@ -637,10 +637,10 @@ display_aac_analysis(aac_results_base;
 @save joinpath(OUTPUT_DIR, "results_base_welfare.jld2") results_base_analysis policy_configs_base status_quo cs_changes_base ps_land_base gr_changes_base env_benefits_base welfare_summary_base aac_results_base
 println("✓ Saved results_base_welfare.jld2")
 
-# 2) Target SAF Welfare Analysis (3B and 6B)
+# 2) Target SAF Welfare Analysis (3B and 5B)
 
 
-const TARGET_SAF_VALUES = [3.0, 6.0]
+const TARGET_SAF_VALUES = [3.0, 5.0]
 
 for target_saf in TARGET_SAF_VALUES
     suffix = target_saf == 3.0 ? "" : "_$(Int(target_saf))"
@@ -653,7 +653,7 @@ for target_saf in TARGET_SAF_VALUES
     if target_saf == 3.0
         @load joinpath(OUTPUT_DIR, "results_equivalent_analysis.jld2") results_equivalent_analysis policy_configs_target equivalent_policies target_saf
     else
-        file_data = load(joinpath(OUTPUT_DIR, "results_equivalent_analysis_6.jld2"))
+        file_data = load(joinpath(OUTPUT_DIR, "results_equivalent_analysis_5.jld2"))
         results_equivalent_analysis = file_data["results_equivalent_analysis"]
         policy_configs_target = file_data["policy_configs_target"]
         equivalent_policies = file_data["equivalent_policies"]

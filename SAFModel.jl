@@ -177,7 +177,7 @@ c0_vec = [
     2.7,               # 4. gasoline
     0.23,                # 5. ethanol
     2.435,              # 6. diesel
-    1.0               # 7. biodiesel (shared by soy and nonsoy biodiesel)
+    1.1               # 7. biodiesel (shared by soy and nonsoy biodiesel)
 ]
 
 c1_vec = [
@@ -564,6 +564,7 @@ function build_unified_model(params, config)
         # 2. RFS aviation mandate
         λ_rfs_avi * (
             (g == :jet_fuel) ? config.θ_avi :
+            #(g in SAF_GOODS) ? -1.6 : 0.0 # without 50% CI threshold
             (g in SAF_GOODS && delta[g] <= 0.5 * delta[:jet_fuel]) ? -1.6 : 0.0 # 50% CI threshold
         ) +
 
@@ -796,6 +797,7 @@ function build_unified_model(params, config)
 
     # RFS aviation (controlled by θ_avi)
     @constraint(model,
+        #1.6 * sum(q[g] for g in SAF_GOODS) - config.θ_avi * q[:jet_fuel] # without 50% CI threshold
         1.6 * sum(q[g] for g in SAF_GOODS if delta[g] <= 0.5 * delta[:jet_fuel]) - config.θ_avi * q[:jet_fuel] # 50% CI threshold
         ⟂
         λ_rfs_avi
