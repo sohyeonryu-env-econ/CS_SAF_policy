@@ -228,10 +228,8 @@ println("Downstream max |ZP_residual| : ", maximum(abs, df_down.ZP_residual))
 # =================================================================================
 # 7. Plot upstream zero-profit decomposition
 # =================================================================================
-
+using Plots
 begin
-    using Plots
-
     bar_spec_up = [
         ("Status Quo", "Conventional", 1.0, "Status Quo", ""),
         ("First Best CarbonTax", "Conventional", 2.5, "1st Best CT", ""),
@@ -280,9 +278,9 @@ begin
 
     n_up = length(xs_up)
     ymax = maximum(r_land_up) * 1.15
-    κ_max = maximum(kap_v)           # = 19
-    y_grp = -(κ_max + 80)            # group label sits 35 units below κ bottom
-    ylim_lo = y_grp - 70              # a bit more room below the label
+    κ_max = maximum(kap_v)
+    y_grp = -(κ_max + 80)
+    ylim_lo = y_grp - 70
 
     function rect_shape(x_center, y_bottom, y_top, half_w)
         l = x_center - half_w
@@ -319,15 +317,15 @@ begin
             seriestype=:shape, color=C_CORN, linecolor=:white, linewidth=0.3, label=lbl)
         labeled[:corn] = true
 
-        lbl = labeled[:meal] ? "" : "MR Soy Meal"
-        plot!(fig_up, rect_shape(x, c, c + m, hw);
-            seriestype=:shape, color=C_MEAL, linecolor=:white, linewidth=0.3, label=lbl)
-        labeled[:meal] = true
-
         lbl = labeled[:oil] ? "" : "MR Soy Oil"
-        plot!(fig_up, rect_shape(x, c + m, c + m + o, hw);
+        plot!(fig_up, rect_shape(x, c, c + o, hw);
             seriestype=:shape, color=C_OIL, linecolor=:white, linewidth=0.3, label=lbl)
         labeled[:oil] = true
+
+        lbl = labeled[:meal] ? "" : "MR Soy Meal"
+        plot!(fig_up, rect_shape(x, c + o, c + o + m, hw);
+            seriestype=:shape, color=C_MEAL, linecolor=:white, linewidth=0.3, label=lbl)
+        labeled[:meal] = true
 
         if k > 1e-6
             lbl = labeled[:kap] ? "" : "κ (CS adoption cost)"
@@ -341,7 +339,6 @@ begin
         marker=:diamond, markersize=6, color=:black, label="land rent")
     hline!(fig_up, [0.0]; color=:black, linewidth=0.8, label="")
 
-    # group labels: y_grp is just below κ bar, above ylim bottom
     for grp in unique(filter(!isempty, grplbls_up))
         idxs = findall(g -> g == grp, grplbls_up)
         mid = (minimum(xs_up[idxs]) + maximum(xs_up[idxs])) / 2
@@ -352,6 +349,8 @@ begin
     println("✓ decomp_upstream_plot.png saved")
     display(fig_up)
 end
+
+
 
 # =================================================================================
 # 8. Plot downstream zero-profit decomposition (4x3 grid, 11 fuel goods)

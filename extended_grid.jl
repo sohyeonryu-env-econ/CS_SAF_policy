@@ -36,10 +36,10 @@ println("  Total: ", status_quo.emissions.total)
 # Define policy grid
 
 const POLICY_RANGES = (
-    t=0:0.912:500,
+    t=0:1:500,
     θ_avi=0:0.001:0.9,
-    σ=0.0:0.00027:0.6,
-    p=0:0.052:70.0
+    σ=0.0:0.0003:0.6,
+    p=0:0.05:100.0
 )
 
 function create_policy_scenarios()
@@ -1423,3 +1423,5 @@ end
 p_saf_stacked_sens = plot_saf_stacked_sensitivity(sensitivity_extended, c0_scenarios, aviation_config)
 display(p_saf_stacked_sens)
 savefig(p_saf_stacked_sens, joinpath(OUTPUT_DIR, "saf_stacked_sensitivity_c0.png"))
+
+
