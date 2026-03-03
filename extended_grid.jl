@@ -12,7 +12,7 @@ using DataFrames
 using Printf
 using Plots
 using JuMP
-const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
+const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results_trials/"
 
 # =================================================================================
 # 1. Load Status Quo from Base Analysis
@@ -406,7 +406,7 @@ function results_to_dataframe(extended_analysis, policy_configs)
     env_benefits = extended_analysis.env_benefits
     welfare_summary = extended_analysis.welfare_summary
 
-    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
+    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
     ROAD_FUELS = [:gasoline, :ethanol, :diesel,
         :biodiesel_soy, :biodiesel_nonsoy, :rd_soy, :rd_nonsoy]
@@ -633,6 +633,7 @@ aviation_config = (
     biofuel_types=[
         (:q_saf_atj_conv, "Conventional ATJ-SAF", :blue),
         (:q_saf_atj_cs, "Climate-Smart ATJ-SAF", :red),
+        (:q_saf_atj_conv_ccs, "ATJ-SAF with CCS", :cyan),
         (:q_saf_hefa_conv, "Conventional HEFA-SAF", :green),
         (:q_saf_hefa_cs, "Climate-Smart HEFA-SAF", :orange),
         (:q_saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple)
@@ -718,7 +719,7 @@ function plot_food_products_by_policy(results_extended_analysis; vlines=nothing)
         x_vals = [get_policy_value(s, policy_type) for s in scenario_list]
         total_corn = [solutions[s].x[:corn] for s in scenario_list]
         ddgs = [0.092 * solutions[s].q[:ethanol] +
-                0.159 * (solutions[s].q[:saf_atj_conv] + solutions[s].q[:saf_atj_cs])
+                0.159 * (solutions[s].q[:saf_atj_conv] + solutions[s].q[:saf_atj_cs] + solutions[s].q[:saf_atj_conv_ccs])
                 for s in scenario_list]
         corn_food = total_corn .- ddgs
         soy_oil = [solutions[s].x[:soyoil] for s in scenario_list]
@@ -1036,11 +1037,11 @@ function plot_fuel_production_stacked(results_df, fuel_config; vlines=nothing)
             xlabel=xlabel,
             ylabel="Quantity (billion gallons)",
             title=title,
-            titlefontsize=20, titlefontweight=:bold,
+            titlefontsize=25, titlefontweight=:bold,
             legend=false, grid=true,
             xlims=(x_min, x_max),
             ylims=fuel_config.ylims,
-            margin=10Plots.mm, guidefontsize=20
+            margin=10Plots.mm, guidefontsize=25
         )
 
         main_fuel_vals = df[!, fuel_config.main_fuel]
@@ -1081,7 +1082,7 @@ function plot_fuel_production_stacked(results_df, fuel_config; vlines=nothing)
         legend=:top, legendcolumns=fuel_config.legendcolumns,
         grid=false, showaxis=false, ticks=false,
         xlims=(0, 1), ylims=(0, 1), framestyle=:none,
-        legendfontsize=15, size=(2200, 80)
+        legendfontsize=20, size=(2500, 80)
     )
     plot!(p_legend, [NaN], [NaN],
         label=fuel_config.main_fuel_label,
@@ -1098,10 +1099,10 @@ function plot_fuel_production_stacked(results_df, fuel_config; vlines=nothing)
         plot(plots..., layout=(2, 2)),
         p_legend,
         layout=grid(2, 1, heights=[0.95, 0.05]),
-        size=(2500, 1800),
+        size=(3000, 2000),
         plot_title=fuel_config.plot_title,
         plot_titlefontsize=25, plot_titlefontweight=:bold,
-        margin=10Plots.mm
+        margin=20Plots.mm
     )
 
     return final_plot
@@ -1117,17 +1118,18 @@ aviation_config = (
     biofuel_types=[
         (:q_saf_atj_conv, "Conventional ATJ-SAF", :blue),
         (:q_saf_atj_cs, "Climate-Smart ATJ-SAF", :red),
+        (:q_saf_atj_conv_ccs, "Conventional ATJ-SAF CCS", :cyan),
         (:q_saf_hefa_conv, "Conventional HEFA-SAF", :green),
         (:q_saf_hefa_cs, "Climate-Smart HEFA-SAF", :orange),
         (:q_saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple)
     ],
     plot_title="Aviation Fuel Production by Policy Stringency",
     filename="aviation_fuel_stacked.png",
-    legendcolumns=6
+    legendcolumns=4
 )
 
 aviation_plot = plot_fuel_production_stacked(results_df, aviation_config; vlines=vlines_data)
-#savefig(aviation_plot, aviation_config.filename)
+# savefig(aviation_plot, aviation_config.filename)
 #display(aviation_plot)
 
 # =====================
@@ -1237,6 +1239,7 @@ function plot_saf_sensitivity(sensitivity_extended, c0_scenarios)
     saf_fuels = [
         (:q_saf_atj_conv, "ATJ-conv"),
         (:q_saf_atj_cs, "ATJ-cs"),
+        (:q_saf_atj_conv_ccs, "ATJ-conv-CCS"),
         (:q_saf_hefa_conv, "HEFA-conv"),
         (:q_saf_hefa_cs, "HEFA-cs"),
         (:q_saf_hefa_nonsoy, "HEFA-nonsoy")

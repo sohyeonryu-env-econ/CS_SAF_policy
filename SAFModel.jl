@@ -26,6 +26,7 @@ const GOODS = [
     :jet_fuel, # "Jet fuel"
     :saf_atj_conv, # "Conventional ATJ-SAF"
     :saf_atj_cs, # "Climate-smart ATJ-SAF"
+    :saf_atj_conv_ccs, # "Conventional ATJ-SAF with CCS"
     :saf_hefa_conv, # "Conventional HEFA-SAF"
     :saf_hefa_cs, # "Climate-smart HEFA-SAF"
     :saf_hefa_nonsoy, # "Non soy HEFA-SAF"
@@ -61,8 +62,8 @@ const SECTORS = [
 ]
 
 const FEEDSTOCK_GOODS = GOODS[1:4] # all feedstock goods
-const FUEL_GOODS = GOODS[5:17]  # all fuel goods
-const FOOD_GOODS = GOODS[18:19]  # all food goods
+const FUEL_GOODS = GOODS[5:18]  # all fuel goods
+const FOOD_GOODS = GOODS[19:20]  # all food goods
 
 # =====================
 # parameters
@@ -70,7 +71,7 @@ const FOOD_GOODS = GOODS[18:19]  # all food goods
 
 # delta: Carbon Intensity (ton CO2e per gallon) all fuel and food goods
 δ_vec = [
-    0.01155398, 0.006545966, 0.005282266, 0.004869036, 0.004237186, 0.002486962,
+    0.01155398, 0.00727, 0.005282266, 0.00581, 0.004869036, 0.00308, 0.002486962,
     0.012051015, 0.003570138, 0.013507512, 0.002547826, 0.002680263,
     0.003202355, 0.002521693, 0.006295, 0.00783
 ]
@@ -101,6 +102,7 @@ r = Dict(
 α = Dict(
     :saf_atj_conv => 0.59,
     :saf_atj_cs => 0.59,
+    :saf_atj_conv_ccs => 0.59,
     :ethanol => 0.3448,
     :saf_hefa_conv => 9.0,
     :saf_hefa_cs => 9.0,
@@ -126,8 +128,9 @@ meal_per_oil = 2.22
     89.0,      # 1. jet_fuel
     56.5998,   # 2. saf_atj_conv
     46.5998,   # 3. saf_atj_cs
+    45.0,   # 4. saf_atj_conv_ccs
     23.9854,   # 4. saf_hefa_conv
-    13.9854,   # 5. saf_hefa_cs
+    9.8,   # 5. saf_hefa_cs
     17.46,     # 6. saf_hefa_nonsoy
     100.72,    # 7. gasoline
     40.17,     # 8. ethanol
@@ -172,7 +175,7 @@ demand = Dict(
 #LOW
 c0_vec = [
     2.338,  # 1. jet_fuel
-    2.3,               # 2. saf_atj (shared by conv & cs ATJ SAF)
+    2.3,               # 2. saf_atj (shared by conv & cs & conv-CCS ATJ SAF)
     1.145,               # 3. saf_hefa (shared by conv, cs, nonsoy HEFA SAF, rd_soy, rd_nonsoy)
     2.7,               # 4. gasoline
     0.23,                # 5. ethanol
@@ -213,7 +216,7 @@ v_vec = [
 # Create mapping for fuel cost parameters
 fuel_goods_cost_map = [
     :jet_fuel,
-    :saf_atj_shared,      # Used for both saf_atj_conv and saf_atj_cs
+    :saf_atj_shared,      # Used for both saf_atj_conv and saf_atj_cs and saf_atj_conv_ccs
     :saf_hefa_shared,     # Used for saf_hefa_conv, saf_hefa_cs, saf_hefa_nonsoy, rd_soy, rd_nonsoy
     :gasoline,
     :ethanol,
@@ -289,6 +292,7 @@ meta = Dict(
         :jet_fuel => "Jet fuel",
         :saf_atj_conv => "Conventional ATJ-SAF",
         :saf_atj_cs => "Climate-smart ATJ-SAF",
+        :saf_atj_conv_ccs => "Conventional ATJ-SAF with CCS",
         :saf_hefa_conv => "Conventional HEFA-SAF",
         :saf_hefa_cs => "Climate-smart HEFA-SAF",
         :saf_hefa_nonsoy => "Non soy HEFA-SAF",
@@ -368,12 +372,12 @@ function build_unified_model(params, config)
 
     # Product groups    
     FEEDSTOCK_GOODS = [:feedstock_corn_n, :feedstock_corn_cs, :feedstock_soy_n, :feedstock_soy_cs]
-    SAF_GOODS = [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    SAF_GOODS = [:saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
     BIODIESEL_GOODS = [:biodiesel_soy, :biodiesel_nonsoy]
     RD_GOODS = [:rd_soy, :rd_nonsoy]
-    CORN_PRODUCTS = [:saf_atj_conv, :saf_atj_cs, :ethanol, :corn]
+    CORN_PRODUCTS = [:saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs, :ethanol, :corn]
     SOY_PRODUCTS = [:saf_hefa_conv, :saf_hefa_cs, :biodiesel_soy, :rd_soy, :soyoil]
-    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
 
     # =====================
     # Variables
@@ -495,7 +499,7 @@ function build_unified_model(params, config)
 
     # Total SAF production by type for processing cost calculation
     @expression(model, total_saf_atj,
-        q[:saf_atj_conv] + q[:saf_atj_cs]
+        q[:saf_atj_conv] + q[:saf_atj_cs] + q[:saf_atj_conv_ccs]
     )
     @expression(model, total_saf_hefa,
         q[:saf_hefa_conv] + q[:saf_hefa_cs] + q[:saf_hefa_nonsoy] +
@@ -601,6 +605,17 @@ function build_unified_model(params, config)
         q[:saf_atj_cs]
     )
 
+    # Conventional ATJ SAF with CCS
+    @constraint(model,
+        process_mc_atj + 0.4 + # Add estimated CCS cost premium
+        alpha[:saf_atj_conv_ccs] * p_f[:feedstock_corn_n] +
+        policy_adjustment[:saf_atj_conv_ccs] -
+        0.159 * p_f[:feedstock_corn_n] - # Deduct DDGS value
+        price_per_unit[:saf_atj_conv_ccs]
+        ⟂
+        q[:saf_atj_conv_ccs]
+    )
+
     # Conventional HEFA SAF
     @constraint(model,
         process_mc_hefa +
@@ -703,9 +718,9 @@ function build_unified_model(params, config)
     # Upstream Feedstock market
     # total conventional feedstock corn demand : Fuel (conventional ATJ SAF, Ethanol) + food - DDGS
     @expression(model, total_corn_n_demand,
-        sum(alpha[g] * q[g] for g in [:saf_atj_conv, :ethanol]) +
+        sum(alpha[g] * q[g] for g in [:saf_atj_conv, :saf_atj_conv_ccs, :ethanol]) +
         x[:corn] -
-        (0.092 * q[:ethanol] + 0.159 * (q[:saf_atj_conv] + q[:saf_atj_cs]))
+        (0.092 * q[:ethanol] + 0.159 * (q[:saf_atj_conv] + q[:saf_atj_cs] + q[:saf_atj_conv_ccs]))
     )
     @constraint(model, (q_corn_n - total_corn_n_demand ⟂ p_f[:feedstock_corn_n]))
 
@@ -876,7 +891,7 @@ function extract_solution(model, scenario)
     q_soy_cs = value(model[:q_soy_cs])
 
     # Calculate derived quantities
-    ddgs = 0.092 * q[:ethanol] + 0.159 * (q[:saf_atj_conv] + q[:saf_atj_cs])
+    ddgs = 0.092 * q[:ethanol] + 0.159 * (q[:saf_atj_conv] + q[:saf_atj_cs] + q[:saf_atj_conv_ccs])
     soymeal_produ = value(model[:total_soymeal_supply])
 
     # Extract duals

@@ -8,7 +8,7 @@ import .SAFModel: params, FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS, tax_credit_ra
 using JLD2;
 using DataFrames;
 using Printf;
-const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
+const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results_trials/"
 
 # =================================================================================
 # 1. Functions for Displaying Comparison Tables and individual Tables
@@ -159,7 +159,7 @@ function calculate_implicit_taxes(solution, params, config)
     μ = duals.λ_lcfs          # LCFS dual
 
     # Aviation fuels
-    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
+    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
 
     # Initialize results
@@ -225,7 +225,7 @@ function make_implicit_tax_table(implicit_taxes, params; scenarios=nothing, excl
         scenario_list = filter(s -> s != :statusquo, scenario_list)
     end
 
-    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
+    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
 
     # Define which tax component to show for each scenario
@@ -263,7 +263,7 @@ end
 function display_implicit_taxes(implicit_taxes, params; scenarios=nothing, show_statusquo=false)
     labels = params.meta[:process_labels]
 
-    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
+    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
 
     scenario_tax_type = Dict(
@@ -485,7 +485,7 @@ end
 
 # Emissions
 function calculate_emissions_detail(solution, params)
-    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
+    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
     ROAD_FUELS = [:gasoline, :ethanol, :diesel,
         :biodiesel_soy, :biodiesel_nonsoy, :rd_soy, :rd_nonsoy]
@@ -524,7 +524,7 @@ end
 function make_emissions_table(solutions, params; scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(solutions)) : scenarios
 
-    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
     ROAD_FUELS = [:gasoline, :ethanol, :diesel, :biodiesel_soy, :biodiesel_nonsoy, :rd_soy, :rd_nonsoy]
     FOOD_GOODS = [:corn, :soyoil]
 

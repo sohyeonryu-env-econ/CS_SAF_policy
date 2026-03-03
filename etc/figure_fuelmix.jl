@@ -177,10 +177,10 @@ row2_handles = [patches.Patch(facecolor="white", edgecolor="black",
 
 leg1 = fig.legend(row1_handles, row1_labels,
     loc="lower center",
-    ncol=6,
+    ncol=3,
     fontsize=9,
     frameon=false,
-    bbox_to_anchor=(0.5, 0.10),
+    bbox_to_anchor=(0.5, 0.13),
     handlelength=2.0,
     handleheight=1.2,
 )

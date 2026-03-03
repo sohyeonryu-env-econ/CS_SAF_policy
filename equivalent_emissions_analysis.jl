@@ -10,7 +10,7 @@ using JLD2
 using JuMP
 using DataFrames
 using Printf
-const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
+const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results_trials"
 
 # =================================================================================
 # 0. Configuration
@@ -148,7 +148,7 @@ for target_saf in TARGET_SAF_VALUES
     rfs_solution = equivalent_solutions[:rfs]
     rfs_emissions = calculate_emissions_detail(rfs_solution, params)
     target_total_emission = rfs_emissions.total
-    println("RFS actual SAF = ", sum(rfs_solution.q[g] for g in [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]))
+    println("RFS actual SAF = ", sum(rfs_solution.q[g] for g in [:saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]))
 
     println("\n--- Target Emissions from RFS ($(target_saf)B SAF) ---")
     println("  Aviation: $(round(rfs_emissions.aviation, digits=3)) Billion ton CO2e")
@@ -470,11 +470,12 @@ for target_saf in TARGET_SAF_VALUES
     show(policy_params_df, allrows=true)
 
     # SAF Production
-    saf_goods = [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    saf_goods = [:saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
     saf_production_df = DataFrame(
         Policy=String[],
         saf_atj_conv=Float64[],
         saf_atj_cs=Float64[],
+        saf_atj_conv_ccs=Float64[],
         saf_hefa_conv=Float64[],
         saf_hefa_cs=Float64[],
         saf_hefa_nonsoy=Float64[],
@@ -489,6 +490,7 @@ for target_saf in TARGET_SAF_VALUES
             String(policy_type),
             solution.q[:saf_atj_conv],
             solution.q[:saf_atj_cs],
+            solution.q[:saf_atj_conv_ccs],
             solution.q[:saf_hefa_conv],
             solution.q[:saf_hefa_cs],
             solution.q[:saf_hefa_nonsoy],

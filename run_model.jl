@@ -10,7 +10,7 @@ Pkg.add("JLD2");
 using JLD2;
 using JuMP;
 
-const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
+const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results_trials/"
 
 # =================================================================================
 # 1. Run Base Scenarios (status quo + example policies)
@@ -44,7 +44,7 @@ println("\n✓ Base results saved to results_base.jld2")
 
 # Find policy stringency function
 function find_policy_for_target_saf(target_saf, params, policy_type; tolerance=0.0001)
-    SAF_GOODS = [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    SAF_GOODS = [:saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
 
     search_ranges = Dict(
         :carbontax => (0.0, 1500.0, :t),

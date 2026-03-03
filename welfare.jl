@@ -5,7 +5,7 @@ using JLD2
 using DataFrames
 using Printf
 using .SAFModel
-const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
+const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results_trials"
 
 
 # =================================================================================
@@ -216,9 +216,9 @@ end
 # =====================
 # GR in Status quo is zero
 function calculate_gov_revenue_change(solution_policy, implicit_taxes_policy, scenario)
-    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
+    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
-    ELIGIBLE_SAF = [:saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    ELIGIBLE_SAF = [:saf_atj_cs, :saf_atj_conv_ccs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
 
     # ⭐ startswith로 정책 타입 판별
     scenario_str = String(scenario)
