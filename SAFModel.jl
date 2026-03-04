@@ -114,7 +114,7 @@ r = Dict(
 )
 
 # theta: road sector RFS D6 blending share
-θ = 0.125
+#θ = 0.125
 
 # Soybeans to oil conversion factor (lb oil per bushel soybeans)
 soybean_to_oil = 10.71 # lb oil per bushel of soybeans
@@ -261,7 +261,7 @@ coeff = (
     r=r,
     beta=β,
     alpha=α,
-    theta=θ,
+    #theta=θ,
     omega=ω,
     kappa=κ,
     soybean_to_oil=soybean_to_oil,
@@ -351,7 +351,7 @@ function build_unified_model(params, config)
     meta = params.meta
     r = coeff.r
     beta = coeff.beta
-    theta = coeff.theta
+    #theta = coeff.theta
     alpha = coeff.alpha
     delta = coeff.delta
     gamma = coeff.gamma
@@ -407,6 +407,11 @@ function build_unified_model(params, config)
     # Variable naming
     for g in FUEL_GOODS
         set_name(q[g], meta[:process_labels][g])
+    end
+
+    # activating CCS or not
+    if !config.use_ccs
+        fix(q[:saf_atj_conv_ccs], 0.0; force=true)
     end
 
     # =====================
@@ -536,10 +541,12 @@ function build_unified_model(params, config)
         # Common contraints      
         # 1. Road RFS D6
         λ_rfs * (
-            (g == :gasoline || g == :diesel) ? theta :
+            (g == :gasoline || g == :diesel) ? config.θ_d6 :
+            (config.D2 && g == :jet_fuel) ? config.θ_d6 :
             (g == :ethanol) ? -1.0 :
             (g in BIODIESEL_GOODS) ? -1.5 :
-            (g in RD_GOODS) ? -1.7 : 0.0
+            (g in RD_GOODS) ? -1.7 :
+            (config.D1 && g in SAF_GOODS) ? -1.6 : 0.0
         ) +
 
         # 2. Blend wall constraints (gasoline, ethanol)
@@ -783,8 +790,10 @@ function build_unified_model(params, config)
     @constraint(model,
         q[:ethanol] +
         1.5 * sum(q[g] for g in BIODIESEL_GOODS) +
-        1.7 * sum(q[g] for g in RD_GOODS) -
-        theta * q[:gasoline] - theta * q[:diesel]
+        1.7 * sum(q[g] for g in RD_GOODS) +
+        1.6 * sum(q[g] for g in SAF_GOODS if config.D1) -
+        config.θ_d6 * (q[:gasoline] + q[:diesel]) -
+        (config.D2 ? config.θ_d6 * q[:jet_fuel] : 0.0)
         ⟂
         λ_rfs
     )
@@ -846,8 +855,12 @@ function run_scenario(scenario::Symbol, params, policy_configs)
     #config = (
     #    t=t,
     #    θ_avi=θ_avi,
+    #    θ_d6=θ_d6,
     #    σ=σ,
-    #    p=p
+    #    p=p,
+    #    D1=D1,
+    #    D2=D2,
+    #    use_ccs=use_ccs
     #)
     config = getproperty(policy_configs, scenario)
 

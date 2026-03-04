@@ -145,8 +145,11 @@ function calculate_implicit_taxes(solution, params, config)
     # Tuple unpacking
     t = config.t
     θ_avi = config.θ_avi
+    θ_d6 = config.θ_d6
     σ = config.σ
     p = config.p
+    D1 = config.D1
+    D2 = config.D2
 
     # Get coefficients
     delta = params.coeff.delta
@@ -156,11 +159,13 @@ function calculate_implicit_taxes(solution, params, config)
     # Get dual variables
     duals = solution.duals
     γ_avi = duals.λ_rfs_avi  # RFS aviation dual
+    λ_rfs = duals.λ_rfs          # RFS overall dual
     μ = duals.λ_lcfs          # LCFS dual
 
     # Aviation fuels
     AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_atj_conv_ccs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    SAF_GOODS = setdiff(AVIATION_FUELS, [:jet_fuel])
 
     # Initialize results
     implicit_tax = Dict(g => Dict(
@@ -176,11 +181,21 @@ function calculate_implicit_taxes(solution, params, config)
         implicit_tax[g][:carbon_tax] = t * delta[g]
 
         # 2. RFS aviation component
-        if g == :jet_fuel
-            implicit_tax[g][:rfs_avi] = γ_avi * θ_avi
-        else  # SAF goods
-            implicit_tax[g][:rfs_avi] = (delta[g] <= 0.5 * delta[:jet_fuel]) ? -γ_avi * 1.6 : 0.0
+        rfs_d6 = if g == :jet_fuel
+            config.D2 ? λ_rfs * θ_d6 : 0.0
+        elseif g in SAF_GOODS
+            (config.D1 && delta[g] <= 0.5 * delta[:jet_fuel]) ? -λ_rfs * 1.6 : 0.0
+        else
+            0.0
         end
+
+        rfs_avi = if g == :jet_fuel
+            γ_avi * θ_avi
+        else
+            (delta[g] <= 0.5 * delta[:jet_fuel]) ? -γ_avi * 1.6 : 0.0
+        end
+
+        implicit_tax[g][:rfs_avi] = rfs_d6 + rfs_avi
 
         # 3. LCFS component
         implicit_tax[g][:lcfs] = -μ * ((1 - σ) * delta[:jet_fuel] - delta[g])
@@ -681,3 +696,62 @@ for target_saf in TARGET_SAF_VALUES
     @save joinpath(OUTPUT_DIR, "results_equivalent_analysis$(suffix).jld2") results_equivalent_analysis policy_configs_target equivalent_policies target_saf
     println("✓ Saved results_equivalent_analysis$(suffix).jld2")
 end
+
+# =================================================================================
+# RFS modifications
+# =================================================================================
+
+@load joinpath(OUTPUT_DIR, "results_rfs_modification.jld2") rfs_results rfs_solutions rfs_policy_configs
+println("✓ Loaded RFS modification results")
+
+# 시나리오 목록
+rfs_scenarios = [:status_quo, :rfs_avi, :rfs_nested, :rfs_obligation, :rfs_obligation_strong]
+
+# 1. 기본 비교 테이블
+display_comparison_tables(
+    rfs_solutions,
+    params,
+    rfs_policy_configs;
+    scenarios=rfs_scenarios,
+    title="RFS MODIFICATION COMPARISON (Target SAF = 3B gallons)",
+    show_policy_params=true,
+    equivalent_policies=rfs_results
+)
+
+# 2. implicit taxes 및 emissions 계산
+implicit_taxes_rfs = calculate_all_implicit_taxes(rfs_solutions, params, rfs_policy_configs)
+
+rfs_analysis = Dict()
+for scenario in rfs_scenarios
+    emissions = calculate_emissions_detail(rfs_solutions[scenario], params)
+    rfs_analysis[scenario] = merge(
+        rfs_solutions[scenario],
+        (
+            implicit_taxes=implicit_taxes_rfs[scenario],
+            emissions=emissions
+        )
+    )
+end
+
+# 3. θ_avi 요약 테이블
+println("\n--- θ_avi Summary ---")
+summary_df = DataFrame(
+    Scenario=String[],
+    θ_avi=Float64[],
+    θ_d6=Float64[],
+    Actual_SAF=Float64[]
+)
+for scenario in rfs_scenarios
+    result = rfs_results[scenario]
+    push!(summary_df, (
+        String(scenario),
+        result.config.θ_avi,
+        result.config.θ_d6,
+        result.actual_saf
+    ))
+end
+show(summary_df, allrows=true)
+
+# 4. 저장
+@save joinpath(OUTPUT_DIR, "results_rfs_modification_analysis.jld2") rfs_analysis rfs_policy_configs rfs_results
+println("\n✓ Saved results_rfs_modification_analysis.jld2")
