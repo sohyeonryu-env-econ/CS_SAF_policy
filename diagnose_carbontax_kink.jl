@@ -143,25 +143,292 @@ end
 println("\n" * "="^110)
 println("Welfare component decomposition near 5B")
 println("="^110)
-println(@sprintf("%-30s %8s %10s %10s %10s %10s %12s %12s",
-    "Scenario", "t(\$/t)", "ΔCS", "ΔPS_land", "ΔGovRev", "ΔEnvBen", "Δpriv_surp", "Δsoc_welf"))
+println(@sprintf("%-30s %8s %12s %12s %12s %12s %12s",
+    "Scenario", "t(\$/t)", "Δsoc_welf", "Δemissions", "MAC_social", "SAF_nonsoy", "SAF_atj_conv"))
 println("-"^110)
-
-cs_ch = results_extended_analysis.cs_changes
-ps_ch = results_extended_analysis.ps_land_changes
-gr_ch = results_extended_analysis.gr_changes
-env_ch = results_extended_analysis.env_benefits
 
 for r in eachrow(df_detail)
     scen = Symbol(r.scenario)
     if !haskey(welfare_summary, scen)
         continue
     end
-    w = welfare_summary[scen]
-    println(@sprintf("%-30s %8.0f %10.4f %10.4f %10.4f %10.4f %12.4f %12.4f",
+    sol = solutions[scen]
+    saf_nonsoy_qty = sol.q[:saf_hefa_nonsoy]
+    saf_atj_conv_qty = sol.q[:saf_atj_conv]
+    println(@sprintf("%-30s %8.0f %12.4f %12.6f %12.2f %12.4f %12.4f",
         r.scenario, r.t,
-        w.cs_change, w.ps_land_change, w.gr_change, w.env_benefit,
-        w.private_surplus, w.social_welfare))
+        r.Δsocial_welfare, r.Δemission, r.mac_social,
+        saf_nonsoy_qty, saf_atj_conv_qty))
+end
+
+# =================================================================================
+# 7. Carbon tax 370~380 범위 상세 정보
+# =================================================================================
+
+println("\n" * "="^110)
+println("Carbon Tax 370~380 range - detailed view")
+println("="^110)
+println(@sprintf("%-30s %8s %12s %12s %12s %12s %12s",
+    "Scenario", "t(\$/t)", "Δsoc_welf", "Δemissions", "MAC_social", "SAF_nonsoy", "SAF_atj_conv"))
+println("-"^110)
+
+df_tax_range = filter(r -> 370 <= r.t <= 380, df_mac);
+for r in eachrow(df_tax_range)
+    marker = ""
+    if r.t ≈ 374
+        marker = " ◀ Non soy HEFA adopted"
+    elseif r.t ≈ 377
+        marker = " ◀ Conv ATJ SAF adopted"
+    end
+    scen = Symbol(r.scenario)
+    sol = solutions[scen]
+    saf_nonsoy_qty = sol.q[:saf_hefa_nonsoy]
+    saf_atj_conv_qty = sol.q[:saf_atj_conv]
+    println(@sprintf("%-30s %8.0f %12.4f %12.6f %12.2f %12.4f %12.4f%s",
+        r.scenario, r.t,
+        r.Δsocial_welfare, r.Δemission, r.mac_social,
+        saf_nonsoy_qty, saf_atj_conv_qty, marker))
 end
 
 println("\n✓ Diagnosis complete.")
+
+# plot_carbontax_kink.jl
+# diagnose_carbontax_kink.jl 실행 후 df_mac, abatement_5B_val이 메모리에 있다고 가정
+
+using Plots
+using Printf
+
+# =================================================================================
+# 0. 꺾임 지점 설정 (t=374, 377)
+# =================================================================================
+
+# t=374와 t=377 근처의 인덱스 찾기
+kink_indices = Int[]
+for (idx, row) in enumerate(eachrow(df_mac))
+    if abs(row.t - 374) < 0.1 || abs(row.t - 377) < 0.1
+        push!(kink_indices, idx)
+    end
+end
+
+if isempty(kink_indices)
+    @warn "kink 지점 미발견"
+    push!(kink_indices, div(nrow(df_mac), 2))
+end
+
+println("지정된 kink 지점 $(length(kink_indices))개")
+for ki in kink_indices
+    println(@sprintf("  index=%d  abatement=%.5f  mac_social=%.2f  t=%.0f",
+        ki, df_mac.abatement[ki], df_mac.mac_social[ki], df_mac.t[ki]))
+end
+
+# =================================================================================
+# 1. 통합 그래프 — 모든 kink를 한 그래프에 표시
+# =================================================================================
+
+WINDOW = 0.04
+
+# 모든 kink 주변 데이터 수집
+all_kinks_data = []
+for kink_i in kink_indices
+    kink_ab = df_mac.abatement[kink_i]
+    kink_t = df_mac.t[kink_i]
+    df_win = filter(r -> abs(r.abatement - kink_ab) <= WINDOW, df_mac)
+    if nrow(df_win) >= 3
+        push!(all_kinks_data, (kink_i=kink_i, kink_ab=kink_ab, kink_t=kink_t, df_win=df_win))
+    end
+end
+
+if !isempty(all_kinks_data)
+    # 첫 번째 kink 데이터를 기본으로 사용
+    d = all_kinks_data[1]
+    x = d.df_win.abatement
+    y1 = d.df_win.mac_social
+    y2 = d.df_win.Δemission
+    y3 = d.df_win.Δsocial_welfare
+
+    p1 = plot(x, y1;
+        label="MAC social",
+        color=:steelblue,
+        linewidth=2.5,
+        marker=:circle,
+        markersize=2,
+        ylabel=raw"$/tCO2e",
+        title="MAC Social",
+        titlefontsize=14,
+        guidefontsize=12,
+        legend=:bottomleft,
+        legendfontsize=12,
+        grid=true,
+        gridstyle=:dash,
+        gridcolor=:lightgray,
+        xlims=(0.08, 0.1),
+    )
+    # 모든 kink를 표시
+    for d in all_kinks_data
+        vline!(p1, [d.kink_ab]; linestyle=:dash, color=:red, lw=1.5, alpha=0.8, label="")
+    end
+
+    p2 = plot(x, y2;
+        label="Δemissions / step",
+        color=:darkorange,
+        linewidth=2.5,
+        marker=:diamond,
+        markersize=2,
+        ylabel="bn tCO2e",
+        title="Δ Emissions per step",
+        titlefontsize=14,
+        guidefontsize=12,
+        legend=:bottomleft,
+        legendfontsize=12,
+        grid=true,
+        gridstyle=:dash,
+        gridcolor=:lightgray,
+        xlims=(0.08, 0.1),
+    )
+    for d in all_kinks_data
+        vline!(p2, [d.kink_ab]; linestyle=:dash, color=:red, lw=1.5, alpha=0.8, label="")
+    end
+    hline!(p2, [0.0]; linestyle=:solid, color=:gray, lw=1.0, alpha=0.5, label="zero")
+
+    p3 = plot(x, y3;
+        label="Δ social welfare / step",
+        color=:mediumseagreen,
+        linewidth=2.5,
+        marker=:utriangle,
+        markersize=2,
+        ylabel=raw"bn $",
+        title="Δ Social Welfare per step",
+        titlefontsize=14,
+        guidefontsize=12,
+        legend=:bottomleft,
+        legendfontsize=12,
+        grid=true,
+        gridstyle=:dash,
+        gridcolor=:lightgray,
+        xlims=(0.08, 0.1),
+    )
+    for d in all_kinks_data
+        vline!(p3, [d.kink_ab]; linestyle=:dash, color=:red, lw=1.5, alpha=0.8, label="")
+    end
+    hline!(p3, [0.0]; linestyle=:solid, color=:gray, lw=1.0, alpha=0.5, label="zero")
+
+    # ═════════════════════════════════════════════════════════════════════════════
+    # p4: Stacked jet fuel and SAF quantity
+    # ═════════════════════════════════════════════════════════════════════════════
+
+    SAF_FUELS = [:saf_hefa_conv, :saf_atj_cs, :saf_atj_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    SAF_COLORS = [:green, :red, :blue, :orange, :purple]
+    SAF_LABELS = ["Conventional HEFA-SAF", "Climate-Smart ATJ-SAF", "Conventional ATJ-SAF", "Climate-Smart HEFA-SAF", "Non-soy HEFA-SAF"]
+
+    # Extract fuel quantities for each scenario (ordered by abatement)
+    jet_fuel_vals = Float64[]
+    t_vals = Float64[]  # t 값 저장
+    saf_totals = Array{Float64,2}(undef, length(SAF_FUELS), nrow(d.df_win))  # Each SAF type separately
+
+    for (idx, r) in enumerate(eachrow(d.df_win))
+        scen = Symbol(r.scenario)
+        sol = solutions[scen]
+
+        push!(jet_fuel_vals, sol.q[:jet_fuel])
+        push!(t_vals, r.t)  # t 값 저장
+
+        # Store each SAF type
+        for (saf_idx, fuel) in enumerate(SAF_FUELS)
+            saf_totals[saf_idx, idx] = sol.q[fuel]
+        end
+    end
+
+    p4 = plot(
+        xlabel="Abatement (bn tCO2e)",
+        ylabel="Quantity (B gallons)",
+        title="Stacked Jet Fuel and SAF Quantity",
+        titlefontsize=14,
+        guidefontsize=12,
+        legend=:bottomleft,
+        legendfontsize=12,
+        grid=true,
+        gridstyle=:dash,
+        gridcolor=:lightgray,
+        xlims=(0.08, 0.1),
+        ylims=(10, 15),
+    )
+
+    # Plot jet fuel (bottom)
+    plot!(p4, x, jet_fuel_vals,
+        fillrange=0,
+        fillalpha=0.7,
+        fillcolor=:black,
+        linewidth=2.0,
+        color=:black,
+        label="Jet Fuel",
+    )
+
+    # Plot stacked SAF (each type separately) - only if non-zero
+    cumsum_saf = copy(jet_fuel_vals)  # Start stacking from jet fuel level
+    final_cumsum = zeros(length(x))
+    saf_markers_x = []
+    saf_markers_y = []
+
+    for (saf_idx, fuel) in enumerate(SAF_FUELS)
+        saf_vals = vec(saf_totals[saf_idx, :])
+        # Only plot if any value is non-zero
+        if any(saf_vals .> 1e-6)
+            new_cumsum = cumsum_saf .+ saf_vals
+            plot!(p4, x, new_cumsum,
+                fillrange=cumsum_saf,
+                fillalpha=0.7,
+                fillcolor=SAF_COLORS[saf_idx],
+                linewidth=2.0,
+                color=SAF_COLORS[saf_idx],
+                label=SAF_LABELS[saf_idx],
+            )
+
+            # 각 SAF 층의 위에 marker 추가 (처음으로 도입되는 지점만)
+            for (j, val) in enumerate(saf_vals)
+                if val .> 1e-6
+                    # 첫 지점이거나 이전 지점에서 0이었던 경우만 marker 추가 (처음 도입되는 순간)
+                    if j == 1 || saf_vals[j-1] <= 1e-6
+                        push!(saf_markers_x, x[j])
+                        push!(saf_markers_y, new_cumsum[j])
+                    end
+                end
+            end
+
+            cumsum_saf = new_cumsum
+        end
+    end
+
+    # 모든 SAF 층의 marker 추가
+    if !isempty(saf_markers_x)
+        plot!(p4, saf_markers_x, saf_markers_y,
+            color=:black,
+            marker=:circle,
+            markersize=3,
+            markerstrokewidth=0.5,
+            markerstrokecolor=:black,
+            linewidth=0,
+            label="",
+        )
+    end
+
+    # 모든 kink 표시
+    for d in all_kinks_data
+        vline!(p4, [d.kink_ab]; linestyle=:dash, color=:red, lw=1.5, alpha=0.8, label="")
+    end
+
+    # Kink 라벨
+    kink_labels = join([@sprintf("t=%.0f", d.kink_t) for d in all_kinks_data], ", ")
+
+    fig = plot(p1, p2, p3, p4;
+        layout=(4, 1),
+        size=(1000, 1280),
+        left_margin=12Plots.mm,
+        right_margin=6Plots.mm,
+        bottom_margin=6Plots.mm,
+        top_margin=4Plots.mm,
+        plot_title=@sprintf("Carbon Tax MAC Kink Analysis  (kinks @ %s)", kink_labels),
+        plot_titlefontsize=16,
+    )
+
+    display(fig)
+end

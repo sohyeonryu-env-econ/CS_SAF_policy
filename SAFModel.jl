@@ -374,6 +374,7 @@ function build_unified_model(params, config)
     CORN_PRODUCTS = [:saf_atj_conv, :saf_atj_cs, :ethanol, :corn]
     SOY_PRODUCTS = [:saf_hefa_conv, :saf_hefa_cs, :biodiesel_soy, :rd_soy, :soyoil]
     AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    ALL_GOODS = union(AVIATION_FUELS, [:gasoline, :ethanol, :diesel, :biodiesel_soy, :biodiesel_nonsoy, :rd_soy, :rd_nonsoy, :corn, :soyoil])
 
     # =====================
     # Variables
@@ -559,7 +560,11 @@ function build_unified_model(params, config)
 
         # Policy-specific adjustments (aviation fuels only)
         # 1. Carbon tax
-        config.t * (g in AVIATION_FUELS ? delta[g] : 0.0) +
+        # config.t * (g in AVIATION_FUELS ? delta[g] : 0.0) +
+        config.t * (
+            config.carbon_tax_scope == :aviation ? (g in AVIATION_FUELS ? delta[g] : 0.0) :
+            config.carbon_tax_scope == :all ? (g in ALL_GOODS ? delta[g] : 0.0) : 0.0
+        ) +
 
         # 2. RFS aviation mandate
         λ_rfs_avi * (
