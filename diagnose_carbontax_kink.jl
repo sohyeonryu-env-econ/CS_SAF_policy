@@ -432,3 +432,152 @@ if !isempty(all_kinks_data)
 
     display(fig)
 end
+
+# =================================================================================
+# plot_zpc.jl
+# diagnose_carbontax_kink.jl 실행 후 df_mac, solutions, abatement_5B_val 이 메모리에 있다고 가정
+# =================================================================================
+
+begin
+    # 파라미터 로드
+    alpha_nonsoy = params.coeff.alpha[:saf_hefa_nonsoy]
+    alpha_atj_conv = params.coeff.alpha[:saf_atj_conv]
+    nonsoy_fp = params.coeff.nonsoy_feedstock_price
+    delta = params.coeff.delta
+    fuel_cost = params.supply.fuel
+    r_jet = params.coeff.r[:jet_fuel]
+    beta_saf = params.coeff.beta[(:saf, :jet_fuel)]
+
+    # process_mc 재계산 함수
+    function calc_process_mc_hefa(sol)
+        total = sol.q[:saf_hefa_conv] + sol.q[:saf_hefa_cs] + sol.q[:saf_hefa_nonsoy] +
+                sol.q[:rd_soy] + sol.q[:rd_nonsoy]
+        fc = fuel_cost[:saf_hefa_shared]
+        return fc.c0 + fc.c1 * total + fc.c2 * max(0.0, total - fc.v)^2
+    end
+
+    function calc_process_mc_atj(sol)
+        total = sol.q[:saf_atj_conv] + sol.q[:saf_atj_cs]
+        fc = fuel_cost[:saf_atj_shared]
+        return fc.c0 + fc.c1 * total + fc.c2 * max(0.0, total - fc.v)^2
+    end
+
+    function calc_policy_adj(sol, t, g)
+        ct = t * delta[g]
+        λ_ns = sol.duals.λ_nonsoy_capacity
+        ns_adj = (g == :saf_hefa_nonsoy) ? λ_ns * alpha_nonsoy : 0.0
+        return ct + ns_adj
+    end
+
+    function calc_price_per_unit_saf(sol)
+        return r_jet * beta_saf * sol.p_c[:avi]
+    end
+
+    # x축 범위 설정 (전체 carbontax 시나리오 사용)
+    WINDOW = 0.04
+    kink_ab = abatement_5B_val   # 또는 원하는 중심값으로 변경
+    df_win = filter(r -> abs(r.abatement - kink_ab) <= WINDOW, df_mac)
+    sort!(df_win, :abatement)
+
+    # ZPC 계산
+    zpc_x = Float64[]
+    zpc_nonsoy = Float64[]
+    zpc_atj = Float64[]
+
+    for r in eachrow(df_win)
+        scen = Symbol(r.scenario)
+        sol = solutions[scen]
+        t = r.t
+        p_corn = sol.p_f[:feedstock_corn_n]
+
+        mc_hefa = calc_process_mc_hefa(sol)
+        mc_atj = calc_process_mc_atj(sol)
+        ppu = calc_price_per_unit_saf(sol)
+
+        zpc_ns = mc_hefa + alpha_nonsoy * nonsoy_fp +
+                 calc_policy_adj(sol, t, :saf_hefa_nonsoy) - ppu
+
+        zpc_at = mc_atj + (alpha_atj_conv - 0.159) * p_corn +
+                 calc_policy_adj(sol, t, :saf_atj_conv) - ppu
+
+        push!(zpc_x, r.abatement)
+        push!(zpc_nonsoy, zpc_ns)
+        push!(zpc_atj, zpc_at)
+    end
+
+    # kink 지점
+    kink_indices = Int[]
+    for (idx, row) in enumerate(eachrow(df_win))
+        if abs(row.t - 374) < 0.1 || abs(row.t - 377) < 0.1
+            push!(kink_indices, idx)
+        end
+    end
+    kink_abs = [df_win.abatement[ki] for ki in kink_indices]
+    kink_labels = join([@sprintf("t=%.0f", df_win.t[ki]) for ki in kink_indices], ", ")
+
+    # =================================================================================
+    # 그래프
+    # =================================================================================
+
+    p_nonsoy = plot(zpc_x, zpc_nonsoy;
+        label="Non-soy HEFA SAF",
+        color=:purple,
+        linewidth=2.5,
+        marker=:circle,
+        markersize=2,
+        xlabel="Abatement (bn tCO2e)",
+        ylabel=raw"$/gallon",
+        title="Zero Profit Condition — Non-soy HEFA SAF",
+        titlefontsize=14,
+        guidefontsize=12,
+        legend=:topright,
+        legendfontsize=11,
+        grid=true,
+        gridstyle=:dash,
+        gridcolor=:lightgray,
+        xlims=(0.08, 0.1),
+        ylims=(-0.05, 0.1),
+    )
+    hline!(p_nonsoy, [0.0]; linestyle=:solid, color=:black, lw=1.5, alpha=0.7, label="ZPC = 0")
+    for kab in kink_abs
+        vline!(p_nonsoy, [kab]; linestyle=:dash, color=:red, lw=1.5, alpha=0.8, label="")
+    end
+
+    p_atj = plot(zpc_x, zpc_atj;
+        label="Conv ATJ SAF",
+        color=:blue,
+        linewidth=2.5,
+        marker=:diamond,
+        markersize=2,
+        xlabel="Abatement (bn tCO2e)",
+        ylabel=raw"$/gallon",
+        title="Zero Profit Condition — Conv ATJ SAF",
+        titlefontsize=14,
+        guidefontsize=12,
+        legend=:topright,
+        legendfontsize=11,
+        grid=true,
+        gridstyle=:dash,
+        gridcolor=:lightgray,
+        xlims=(0.08, 0.1),
+        ylims=(-0.05, 0.1),
+    )
+    hline!(p_atj, [0.0]; linestyle=:solid, color=:black, lw=1.5, alpha=0.7, label="ZPC = 0")
+    for kab in kink_abs
+        vline!(p_atj, [kab]; linestyle=:dash, color=:red, lw=1.5, alpha=0.8, label="")
+    end
+
+    fig_zpc = plot(p_nonsoy, p_atj;
+        layout=(2, 1),
+        size=(1000, 640),
+        left_margin=12Plots.mm,
+        right_margin=6Plots.mm,
+        bottom_margin=6Plots.mm,
+        top_margin=4Plots.mm,
+        plot_title=@sprintf("Zero Profit Condition  (kinks @ %s)", kink_labels),
+        plot_titlefontsize=16,
+    )
+
+    display(fig_zpc)
+end
+

@@ -36,7 +36,7 @@ welfare_base = display_comparison_tables(results_base, params, policy_configs_ba
     scenarios=[:statusquo, :carbontax_first_best_all, :carbontax_first_best_avi],
     title="Status quo and First Best Carbon Tax RESULTS")
 
-@save joinpath(OUTPUT_DIR, "results_base.jld2") results_base policy_configs_baset welfare_base
+@save joinpath(OUTPUT_DIR, "results_base.jld2") results_base policy_configs_base welfare_base
 println("✓ Saved results_base.jld2")
 
 # =================================================================================

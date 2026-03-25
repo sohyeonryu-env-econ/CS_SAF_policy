@@ -3,10 +3,13 @@ cd(@__DIR__)
 println("Working directory: ", pwd())
 
 include(joinpath(@__DIR__, "SAFModel.jl"))
-include(joinpath(@__DIR__, "analysis.jl"))  # implicit tax, emissions
-include(joinpath(@__DIR__, "welfare.jl"))   # welfare
+include(joinpath(@__DIR__, "analysis.jl"))   # load analysis.jl from the same directory
 import .SAFModel: params, build_unified_model, extract_solution,
     FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
+import .SAFAnalysis: calculate_emissions_detail, calculate_implicit_taxes,
+    calculate_cs_changes, calculate_ps_land_changes,
+    calculate_gr_changes, calculate_environmental_benefit,
+    calculate_total_welfare
 using JLD2
 using DataFrames
 using Printf
@@ -18,13 +21,8 @@ const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-Univers
 # 1. Load Status Quo from Base Analysis
 # =================================================================================
 
-@load joinpath(OUTPUT_DIR, "results_base_welfare.jld2") status_quo
-
-println("\nStatus quo emissions (billion ton CO2e):")
-println("  Aviation: ", status_quo.emissions.aviation)
-println("  Road: ", status_quo.emissions.road)
-println("  Food: ", status_quo.emissions.food)
-println("  Total: ", status_quo.emissions.total)
+@load joinpath(OUTPUT_DIR, "results_base.jld2") results_base policy_configs_base welfare_base
+status_quo = results_base[:statusquo]
 
 # =================================================================================
 # 2. Extended Policy Parameter Grid
@@ -48,29 +46,29 @@ function create_policy_scenarios()
     # 1. Carbon tax scenarios (varying t)
     for t in POLICY_RANGES.t
         t_int = round(Int, t)
-        scenarios[Symbol("carbontax_$t_int")] = (t=Float64(t), θ_avi=0.0, σ=0.0, p=0.0)
+        scenarios[Symbol("carbontax_$t_int")] = (t=Float64(t), θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
     end
 
     # 2. RFS aviation scenarios (varying θ_avi)
     for θ in POLICY_RANGES.θ_avi
         θ_int = round(Int, θ * 1000)
-        scenarios[Symbol("rfs_$θ_int")] = (t=0.0, θ_avi=Float64(θ), σ=0.0, p=0.0)
+        scenarios[Symbol("rfs_$θ_int")] = (t=0.0, θ_avi=Float64(θ), σ=0.0, p=0.0, carbon_tax_scope=:aviation)
     end
 
     # 3. LCFS scenarios (varying σ)
     for σ in POLICY_RANGES.σ
         σ_int = round(Int, σ * 1000)
-        scenarios[Symbol("lcfs_$σ_int")] = (t=0.0, θ_avi=0.0, σ=Float64(σ), p=0.0)
+        scenarios[Symbol("lcfs_$σ_int")] = (t=0.0, θ_avi=0.0, σ=Float64(σ), p=0.0, carbon_tax_scope=:aviation)
     end
 
     # 4. Tax credit scenarios (varying p)
     for p in POLICY_RANGES.p
         p_int = round(Int, p * 100)
-        scenarios[Symbol("taxcredit_$p_int")] = (t=0.0, θ_avi=0.0, σ=0.0, p=Float64(p))
+        scenarios[Symbol("taxcredit_$p_int")] = (t=0.0, θ_avi=0.0, σ=0.0, p=Float64(p), carbon_tax_scope=:aviation)
     end
 
     # Add status quo
-    scenarios[:statusquo] = (t=0.0, θ_avi=0.0, σ=0.0, p=0.0)
+    scenarios[:statusquo] = (t=0.0, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
     return scenarios
 end
 
@@ -187,16 +185,17 @@ end
 # 3) RUN EXTENDED ANALYSIS
 # =====================
 
-# solve
-all_results, all_solutions = run_extended_analysis(params, EXTENDED_POLICY_MATRIX, verbose=true);
+all_results, all_solutions = run_extended_analysis(params, EXTENDED_POLICY_MATRIX, verbose=true)
 
-# welfare
 results_extended_analysis = calculate_extended_welfare_analysis(
     all_solutions,
     EXTENDED_POLICY_MATRIX,
     params,
     scc=190.0
-);
+)
+
+@save joinpath(OUTPUT_DIR, "results_extended.jld2") all_solutions EXTENDED_POLICY_MATRIX results_extended_analysis
+println("✓ Saved results_extended.jld2")
 
 # =================================================================================
 # 3. MARGINAL ABATEMENT COST CALCULATION FOR EXTENDED GRID
@@ -1442,7 +1441,7 @@ aviation_plot = plot_fuel_production_stacked(results_df, aviation_config; vlines
 gasoline_config = (
     main_fuel=:q_gasoline,
     main_fuel_label="Gasoline",
-    ylims=(0, 150),
+    ylims=(0, 200),
     biofuel_types=[
         (:q_ethanol, "Ethanol", :red)
     ],
@@ -1461,7 +1460,7 @@ gasoline_plot = plot_fuel_production_stacked(results_df, gasoline_config; vlines
 diesel_config = (
     main_fuel=:q_diesel,
     main_fuel_label="Diesel",
-    ylims=(30, 50),
+    ylims=(30, 55),
     biofuel_types=[
         (:q_rd_soy, "Soy Renewable Diesel", :red),
         (:q_rd_nonsoy, "Non-soy Renewable Diesel", :green),
@@ -2345,3 +2344,261 @@ end
 p_feedstock = plot_feedstock_prices_by_policy(
     results_extended_analysis; vlines=vlines_data)
 display(p_feedstock)
+
+# =================================================================================
+# Tax Credit: x[:avi] for all p values
+# =================================================================================
+
+
+tax_credit_scenarios = filter(k -> startswith(String(k), "taxcredit_"), keys(results_extended_analysis.solutions))
+for scen in sort(collect(tax_credit_scenarios), by=s -> begin
+    p_str = split(String(s), "_")[2]
+    parse(Float64, p_str) / 100
+end)
+    sol = results_extended_analysis.solutions[scen]
+    p_val = parse(Float64, split(String(scen), "_")[2]) / 100
+    x_avi = sol.x[:avi]
+    println(@sprintf("%-15.2f %15.6f", p_val, x_avi))
+end
+# =================================================================================
+# Implicit Tax by Policy Type
+# =================================================================================
+
+function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
+    solutions = results_extended_analysis.solutions
+    scenario_groups = results_extended_analysis.scenario_groups
+
+    fuel_info = [
+        (:jet_fuel, "Jet Fuel", :black, :solid),
+        (:saf_atj_conv, "Conv ATJ-SAF", :blue, :solid),
+        (:saf_atj_cs, "CS ATJ-SAF", :red, :solid),
+        (:saf_hefa_conv, "Conv HEFA-SAF", :green, :solid),
+        (:saf_hefa_cs, "CS HEFA-SAF", :orange, :solid),
+        (:saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple, :solid),
+    ]
+
+    RFS_GROUP_SAF = [:saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+
+    x_ranges = Dict(
+        :carbontax => (0.0, 500.0),
+        :rfs => (0.0, 0.9),
+        :lcfs => (0.0, 0.3),
+        :taxcredit => (0.0, 75.0),
+    )
+
+    policy_key = Dict(
+        :carbontax => :carbon_tax,
+        :rfs => :rfs_avi,
+        :lcfs => :lcfs,
+        :taxcredit => :tax_credit,
+    )
+
+    policies = [
+        (:carbontax, "Carbon Tax (\$/ton CO₂e)", "Carbon Tax", false),
+        (:rfs, "RFS Aviation Mandate (θ_avi)", "RFS Aviation", false),
+        (:lcfs, "LCFS Standard (σ)", "LCFS", false),
+        (:taxcredit, "Tax Credit (\$/gallon)", "Tax Credit", false),
+    ]
+
+    YLIMS_CARBONTAX = (0.0, 10.0)
+    YLIMS_RFS = (-5.0, 2.0)
+    YLIMS_LCFS = (-10.0, 5.0)
+    YLIMS_TAXCREDIT = (-55.0, 1.0)
+
+    function get_ylims(policy_type)
+        policy_type == :carbontax ? YLIMS_CARBONTAX :
+        policy_type == :rfs ? YLIMS_RFS :
+        policy_type == :lcfs ? YLIMS_LCFS :
+        YLIMS_TAXCREDIT
+    end
+
+    function get_x(s, policy_type)
+        config = EXTENDED_POLICY_MATRIX[s]
+        policy_type == :carbontax ? config.t :
+        policy_type == :rfs ? config.θ_avi :
+        policy_type == :lcfs ? config.σ :
+        config.p
+    end
+
+    label_map = Dict(
+        :jet_fuel => ("Jet Fuel", :black),
+        :saf_atj_conv => ("Conv ATJ-SAF", :blue),
+        :saf_atj_cs => ("CS ATJ-SAF", :red),
+        :saf_hefa_conv => ("Conv HEFA-SAF", :green),
+        :saf_hefa_cs => ("CS HEFA-SAF", :orange),
+        :saf_hefa_nonsoy => ("Non-soy HEFA-SAF", :purple),
+        :all_other_saf => ("All Other SAF", RGB(0.2, 0.2, 0.2)),
+    )
+
+    plots_list = []
+
+    for (policy_type, xlabel, title, reverse_sort) in policies
+        scenario_list = scenario_groups[policy_type]
+        sorted_scenarios = sort(scenario_list,
+            by=s -> parse(Int, split(String(s), "_")[2]),
+            rev=reverse_sort)
+
+        ylims_cur = get_ylims(policy_type)
+        xlims_cur = x_ranges[policy_type]
+        it_key = policy_key[policy_type]
+
+        p = plot(
+            xlabel=xlabel,
+            ylabel="Implicit Tax / Subsidy (\$/gallon)",
+            title=title,
+            titlefontsize=28, titlefontweight=:bold,
+            legend=false,
+            grid=true,
+            xlims=xlims_cur,
+            ylims=ylims_cur,
+            left_margin=22Plots.mm,
+            bottom_margin=15Plots.mm,
+            right_margin=55Plots.mm,
+            top_margin=10Plots.mm,
+            guidefontsize=22,
+            tickfontsize=18
+        )
+
+        hline!(p, [0], color=:gray, linestyle=:dot, linewidth=1.5, label="")
+
+        series_data = Dict{Symbol,Tuple{Vector{Float64},Vector{Float64}}}()
+
+        if policy_type == :rfs
+            individual_fuels = [:jet_fuel, :saf_atj_conv]
+            individual_info = filter(x -> x[1] in individual_fuels, fuel_info)
+
+            for (g, label, color, lstyle) in individual_info
+                xs = Float64[]
+                itvals = Float64[]
+                for s in sorted_scenarios
+                    sol = solutions[s]
+                    isnothing(sol) && continue
+                    !hasproperty(sol, :implicit_taxes) && continue
+                    isnothing(sol.implicit_taxes) && continue
+                    !haskey(sol.implicit_taxes, g) && continue
+                    push!(xs, get_x(s, policy_type))
+                    push!(itvals, sol.implicit_taxes[g][it_key])
+                end
+                isempty(xs) && continue
+                series_data[g] = (xs, itvals)
+                plot!(p, xs, itvals, linewidth=3.0, color=color,
+                    linestyle=lstyle, label=label)
+            end
+
+            g_rep = RFS_GROUP_SAF[1]
+            xs = Float64[]
+            itvals = Float64[]
+            for s in sorted_scenarios
+                sol = solutions[s]
+                isnothing(sol) && continue
+                !hasproperty(sol, :implicit_taxes) && continue
+                isnothing(sol.implicit_taxes) && continue
+                !haskey(sol.implicit_taxes, g_rep) && continue
+                push!(xs, get_x(s, policy_type))
+                push!(itvals, sol.implicit_taxes[g_rep][it_key])
+            end
+            if !isempty(xs)
+                series_data[:all_other_saf] = (xs, itvals)
+                plot!(p, xs, itvals, linewidth=3.0, color=:darkgray,
+                    linestyle=:solid, label="All Other SAF")
+            end
+
+        else
+            for (g, label, color, lstyle) in fuel_info
+                xs = Float64[]
+                itvals = Float64[]
+                for s in sorted_scenarios
+                    sol = solutions[s]
+                    isnothing(sol) && continue
+                    !hasproperty(sol, :implicit_taxes) && continue
+                    isnothing(sol.implicit_taxes) && continue
+                    !haskey(sol.implicit_taxes, g) && continue
+                    # x범위 필터링
+                    xval = get_x(s, policy_type)
+                    xlims_cur[1] <= xval <= xlims_cur[2] || continue
+                    push!(xs, xval)
+                    push!(itvals, sol.implicit_taxes[g][it_key])
+                end
+                isempty(xs) && continue
+                series_data[g] = (xs, itvals)
+                plot!(p, xs, itvals, linewidth=3.0, color=color,
+                    linestyle=lstyle, label=label)
+            end
+        end
+
+        # 끝점 라벨
+        OVERLAP_THRESH = (ylims_cur[2] - ylims_cur[1]) * 0.05
+
+        endpoint_vals = Dict{Symbol,Float64}()
+        for (g, (xs, itvals)) in series_data
+            isempty(xs) && continue
+            idx = sortperm(xs)
+            endpoint_vals[g] = itvals[idx[end]]
+        end
+
+        isempty(endpoint_vals) && (push!(plots_list, p); continue)
+
+        sorted_by_y = sort(collect(endpoint_vals), by=x -> x[2])
+        label_pos = Dict(g => y for (g, y) in sorted_by_y)
+
+        for i in 2:length(sorted_by_y)
+            g_prev, _ = sorted_by_y[i-1]
+            g_cur, _ = sorted_by_y[i]
+            if abs(label_pos[g_cur] - label_pos[g_prev]) < OVERLAP_THRESH
+                label_pos[g_cur] = label_pos[g_prev] + OVERLAP_THRESH
+            end
+        end
+
+        x_width = xlims_cur[2] - xlims_cur[1]
+
+        for (g, (lbl, color)) in label_map
+            haskey(label_pos, g) || continue
+            ypos = label_pos[g]
+            ylims_cur[1] - OVERLAP_THRESH <= ypos <= ylims_cur[2] + OVERLAP_THRESH || continue
+            annotate!(p,
+                xlims_cur[2] + x_width * 0.02,
+                ypos,
+                text(lbl, color, :left, 16))
+        end
+
+        # vlines
+        if !isnothing(vlines) && haskey(vlines, policy_type)
+            vline_colors = [:darkred, :darkblue]
+            for (j, (xval, vlabel)) in enumerate(vlines[policy_type])
+                c = vline_colors[min(j, length(vline_colors))]
+                vline!(p, [xval], color=c, linestyle=:dash, linewidth=1.8, label="")
+                annotate!(p, xval, ylims_cur[2] * 0.93,
+                    text(vlabel, c, :center, 14))
+            end
+        end
+
+        push!(plots_list, p)
+    end
+    if policy_type == :taxcredit
+        x_width = xlims_cur[2] - xlims_cur[1]
+        annotate!(p,
+            xlims_cur[2] + x_width * 0.02,
+            0.0 + (ylims_cur[2] - ylims_cur[1]) * 0.03,  # 살짝 위로
+            text("Jet Fuel", :black, :left, 16))
+    end
+
+    final_plot = plot(
+        plots_list...,
+        layout=(2, 2),
+        size=(2600, 1800),
+        plot_title="Implicit Tax / Subsidy on Aviation Fuels by Policy Stringency",
+        plot_titlefontsize=28,
+        plot_titlefontweight=:bold,
+        margin=12Plots.mm
+    )
+
+    return final_plot
+end
+
+p_implicit_tax = plot_implicit_tax_by_policy(
+    results_extended_analysis; vlines=vlines_data)
+display(p_implicit_tax)
+# savefig(p_implicit_tax, joinpath(OUTPUT_DIR, "implicit_tax_aviation.png"))
+
+
+

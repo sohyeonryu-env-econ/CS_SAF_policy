@@ -580,6 +580,9 @@ function build_unified_model(params, config)
 
         #. 4. Tax credit for SAF
         -(g in SAF_GOODS && haskey(delta_mj, g) ? tax_credit_rate(delta_mj[g], baselineCI, config.p) : 0.0)
+        # If the tax credit is applied to all biofuels
+        #-(g in union(SAF_GOODS, BIODIESEL_GOODS, RD_GOODS, [:ethanol]) && haskey(delta_mj, g) ?
+        #  tax_credit_rate(delta_mj[g], baselineCI, config.p) : 0.0)
     )
 
     # zero profit conditions
