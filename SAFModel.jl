@@ -181,7 +181,7 @@ c0_vec = [
 ]
 
 c1_vec = [
-    0.0,  # 1. jet_fuel
+    0.001,  # 1. jet_fuel
     0.0,     # 2. saf_atj (shared)
     0.0,     # 3. saf_hefa (shared)
     0.0,   # 4. gasoline
@@ -242,6 +242,7 @@ supply = (
 
 # land corn ratio
 ω = 0.54
+σ_cet = 0.0 # elasticity of transformation between corn and soybeans
 
 # κ: fixed costs of climate-smart practice adoption
 κ = 19.0  # $ per acre
@@ -260,6 +261,7 @@ coeff = (
     alpha=α,
     theta=θ,
     omega=ω,
+    σ_cet=σ_cet,
     kappa=κ,
     soybean_to_oil=soybean_to_oil,
     soybean_to_meal=soybean_to_meal,
@@ -357,6 +359,7 @@ function build_unified_model(params, config)
     fuel_cost = supply.fuel
     land_supply = supply.land
     omega = coeff.omega
+    σ_cet = coeff.σ_cet
     kappa = coeff.kappa
     delta_mj = coeff.delta_mj
     baselineCI = coeff.baselineCI
@@ -404,6 +407,24 @@ function build_unified_model(params, config)
     # Variable naming
     for g in FUEL_GOODS
         set_name(q[g], meta[:process_labels][g])
+    end
+
+    # I need initial values for the non linear solver to converge. (CET)
+    set_start_value(l_n, L0)
+    set_start_value(l_cs, 0.0)
+    set_start_value(r_land, r0_land)
+    for f in FEEDSTOCK_GOODS
+        set_start_value(p_f[f], 5.0)
+    end
+    set_start_value(p_c[:avi], 0.04)
+    set_start_value(p_c[:gas], 0.127)
+    set_start_value(p_c[:die], 0.3356)
+    set_start_value(p_c[:soymeal], 423.41)
+    for s in SECTORS
+        set_start_value(x[s], demand[s].s * 0.1)
+    end
+    for g in FUEL_GOODS
+        set_start_value(q[g], 0.1)
     end
 
     # =====================
@@ -462,23 +483,39 @@ function build_unified_model(params, config)
     # =====================
     # Upstream farmers
     # =====================
+    # Revenue per acre($/acre): 2 crops * 2 practices
+    @expression(model, R_corn_n, gamma[:feedstock_corn_n] * p_f[:feedstock_corn_n])
+    @expression(model, R_corn_cs, gamma[:feedstock_corn_cs] * p_f[:feedstock_corn_cs])
+    @expression(model, R_soy_n, gamma[:feedstock_soy_n] * (p_f[:feedstock_soy_n] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal))
+    @expression(model, R_soy_cs, gamma[:feedstock_soy_cs] * (p_f[:feedstock_soy_cs] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal))
+
+    # Marginal revenue per acre ($/acre): 2 practices
+    @expression(model, marginal_revenue_n, (omega * R_corn_n^(1 + σ_cet) + (1 - omega) * R_soy_n^(1 + σ_cet))^(1 / (1 + σ_cet)))
+    @expression(model, marginal_revenue_cs, (omega * R_corn_cs^(1 + σ_cet) + (1 - omega) * R_soy_cs^(1 + σ_cet))^(1 / (1 + σ_cet)))
+
+    # feedstock production quantities
+    @expression(model, q_corn_n, gamma[:feedstock_corn_n] * omega * (R_corn_n / marginal_revenue_n)^σ_cet * l_n)
+    @expression(model, q_corn_cs, gamma[:feedstock_corn_cs] * omega * (R_corn_cs / marginal_revenue_cs)^σ_cet * l_cs)
+    @expression(model, q_soy_n, gamma[:feedstock_soy_n] * (1 - omega) * (R_soy_n / marginal_revenue_n)^σ_cet * l_n * soybean_to_oil)
+    @expression(model, q_soy_cs, gamma[:feedstock_soy_cs] * (1 - omega) * (R_soy_cs / marginal_revenue_cs)^σ_cet * l_cs * soybean_to_oil)
+
     # feedstock production (soybeans to soybean oil conversion =10.71lb/bushel)
-    @expression(model, q_corn_n, omega * gamma[:feedstock_corn_n] * l_n)
-    @expression(model, q_corn_cs, omega * gamma[:feedstock_corn_cs] * l_cs)
-    @expression(model, q_soy_n, (1 - omega) * gamma[:feedstock_soy_n] * l_n * soybean_to_oil)
+    #@expression(model, q_corn_n, omega * gamma[:feedstock_corn_n] * l_n)
+    #@expression(model, q_corn_cs, omega * gamma[:feedstock_corn_cs] * l_cs)
+    #@expression(model, q_soy_n, (1 - omega) * gamma[:feedstock_soy_n] * l_n * soybean_to_oil)
     # oil and meal are jointly produced, so soybeans quantity = soybean oil * soybean_to_oil = soybean meal * soybean_to_meal. gamma here is for soybeans before crushing.
-    @expression(model, q_soy_cs, (1 - omega) * gamma[:feedstock_soy_cs] * l_cs * soybean_to_oil)
+    #@expression(model, q_soy_cs, (1 - omega) * gamma[:feedstock_soy_cs] * l_cs * soybean_to_oil)
 
     # Marginal revenue: Upstream farmers
-    @expression(model, marginal_revenue_n,
-        omega * gamma[:feedstock_corn_n] * p_f[:feedstock_corn_n] +
-        (1 - omega) * gamma[:feedstock_soy_n] * (p_f[:feedstock_soy_n] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal)
-    )
+    #@expression(model, marginal_revenue_n,
+    #    omega * gamma[:feedstock_corn_n] * p_f[:feedstock_corn_n] +
+    #    (1 - omega) * gamma[:feedstock_soy_n] * (p_f[:feedstock_soy_n] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal)
+    #)
 
-    @expression(model, marginal_revenue_cs,
-        omega * gamma[:feedstock_corn_cs] * p_f[:feedstock_corn_cs] +
-        (1 - omega) * gamma[:feedstock_soy_cs] * (p_f[:feedstock_soy_cs] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal)
-    )
+    #@expression(model, marginal_revenue_cs,
+    #    omega * gamma[:feedstock_corn_cs] * p_f[:feedstock_corn_cs] +
+    #    (1 - omega) * gamma[:feedstock_soy_cs] * (p_f[:feedstock_soy_cs] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal)
+    #)
 
     # zero profit condition
     # conventional farmer
@@ -831,32 +868,22 @@ end
 # =====================
 
 function run_scenario(scenario::Symbol, params, policy_configs)
-
-    # Get policy parameters
-    #t, θ_avi, σ, p = policy_matrix[scenario]
-
-    # Build config
-    #config = (
-    #    t=t,
-    #    θ_avi=θ_avi,
-    #    σ=σ,
-    #    p=p
-    #)
     config = getproperty(policy_configs, scenario)
-
-    # Build and solve
     model = build_unified_model(params, config)
+
     optimize!(model)
 
+    status = termination_status(model)
+    println("  Status: $status")
+
     if is_solved_and_feasible(model)
-        println("\n✓ $(scenario) solved successfully")
+        println("✓ $(scenario) solved")
         return model
     else
-        println("\n✗ $(scenario) failed to solve")
+        println("✗ $(scenario) failed: $status")
         return nothing
     end
 end
-
 
 # =====================
 # Result Extraction (when there is only 1 policy stringency)
@@ -932,5 +959,6 @@ end
 
 export params, tax_credit_rate, build_unified_model, run_scenario, extract_solution, extract_all_solutions
 export FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
+export is_solved_and_feasible
 
 end # module SAFPolicy

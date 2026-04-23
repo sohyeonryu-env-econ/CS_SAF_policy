@@ -56,8 +56,8 @@ end
 const POLICY_RANGES = (
     t=0:0.1:700,
     θ_avi=0:0.001:0.9,
-    σ=0.0:0.0003:0.5,
-    p=0:0.05:100.0
+    σ=0.0:0.0003:0.8,
+    p=0:0.05:50.0
 )
 
 function create_policy_scenarios()
@@ -382,12 +382,12 @@ function plot_fuel_production_stacked(results_df, fuel_config; vlines=nothing)
         x_vals = df[!, xcol]
         x_min, x_max = extrema(x_vals)
 
-        #biofuel_sorted = sort(fuel_config.biofuel_types, by=x -> mean(df[!, x[1]]), rev=true)
-        biofuel_sorted = fuel_config.biofuel_types  # 이렇게 하면 정의된 순서대로 깔림
+        biofuel_sorted = fuel_config.biofuel_types
 
         p = plot(xlabel=xlabel, ylabel="Quantity (billion gallons)", title=title,
             titlefontsize=25, titlefontweight=:bold, legend=false, grid=true,
-            xlims=(policy_type == :lcfs ? (0.0, 0.2) : (x_min, x_max)), ylims=fuel_config.ylims,
+            xlims=(policy_type == :lcfs ? (0.0, 0.4) : (x_min, x_max)),
+            ylims=fuel_config.ylims,
             margin=10Plots.mm, guidefontsize=25, left_margin=15Plots.mm,
             bottom_margin=15Plots.mm, tickfontsize=20, labelfontsize=23)
 
@@ -398,24 +398,12 @@ function plot_fuel_production_stacked(results_df, fuel_config; vlines=nothing)
         cumsum_vals = copy(main_vals)
         for (col, _, color) in biofuel_sorted
             col_vals = df[!, col]
-            new_cum = similar(cumsum_vals)
-            for i in 1:length(cumsum_vals)
-                # 0인 값은 건너뛰기 (NaN으로 처리)
-                if col_vals[i] < 1e-10
-                    new_cum[i] = NaN
-                else
-                    new_cum[i] = cumsum_vals[i] + col_vals[i]
-                end
-            end
-            # NaN이 아닌 부분만 플롯
-            mask = .!isnan.(new_cum)
-            if any(mask)
-                plot!(p, x_vals[mask], new_cum[mask], fillrange=cumsum_vals[mask],
-                    fillalpha=0.7, fillcolor=color, linewidth=1.5, color=color, label="")
-            end
-            # cumsum 업데이트 (0인 경우는 이전값 유지)
-            cumsum_vals = [col_vals[i] < 1e-10 ? cumsum_vals[i] : new_cum[i] for i in 1:length(new_cum)]
+            new_cum = cumsum_vals .+ col_vals
+            plot!(p, x_vals, new_cum, fillrange=cumsum_vals,
+                fillalpha=0.7, fillcolor=color, linewidth=1.5, color=color, label="")
+            cumsum_vals = new_cum
         end
+
         add_vlines!(p, policy_type, vlines; annotate_y=fuel_config.ylims[2] * 0.97)
         push!(plots, p)
     end
@@ -708,7 +696,7 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
         (:saf_hefa_cs, "CS HEFA-SAF", :orange, :solid), (:saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple, :solid)]
     RFS_GROUP = [:saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
 
-    xlims_map = Dict(:carbontax => (0.0, 700.0), :rfs => (0.0, 0.9), :lcfs => (0.0, 0.5), :taxcredit => (0.0, 75.0))
+    xlims_map = Dict(:carbontax => (0.0, 700.0), :rfs => (0.0, 0.9), :lcfs => (0.0, 0.9), :taxcredit => (0.0, 75.0))
     ylims_map = Dict(:carbontax => (0.0, 10.0), :rfs => (-5.0, 2.0), :lcfs => (-10.0, 10.0), :taxcredit => (-55.0, 1.0))
     it_key_map = Dict(:carbontax => :carbon_tax, :rfs => :rfs_avi, :lcfs => :lcfs, :taxcredit => :tax_credit)
 
@@ -815,11 +803,13 @@ display(plot_implicit_tax_by_policy(results_extended_analysis; vlines=vlines_dat
 # ── Aviation/Gasoline/Diesel stacked quantity plots ──────────────────────────
 aviation_config = (
     main_fuel=:q_jet_fuel, main_fuel_label="Jet Fuel", ylims=(0, 22),
-    biofuel_types=[(:q_saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple),
-        (:q_saf_hefa_cs, "Climate-Smart HEFA-SAF", :orange),
-        (:q_saf_hefa_conv, "Conventional HEFA-SAF", :green),
+    biofuel_types=[
+        (:q_saf_hefa_cs, "Climate-Smart HEFA-SAF", :orange),      # 먼저 쌓음
         (:q_saf_atj_cs, "Climate-Smart ATJ-SAF", :red),
-        (:q_saf_atj_conv, "Conventional ATJ-SAF", :blue)],
+        (:q_saf_atj_conv, "Conventional ATJ-SAF", :blue),
+        (:q_saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple),
+        (:q_saf_hefa_conv, "Conventional HEFA-SAF", :green),       # 마지막에 쌓음
+    ],
     plot_title="Aviation Fuel Production by Policy Stringency", legendcolumns=3)
 
 gasoline_config = (
@@ -836,6 +826,7 @@ diesel_config = (
 display(plot_fuel_production_stacked(results_df, aviation_config; vlines=vlines_data))
 display(plot_fuel_production_stacked(results_df, gasoline_config; vlines=vlines_data))
 display(plot_fuel_production_stacked(results_df, diesel_config; vlines=vlines_data))
+
 
 # ── Food ─────────────────────────────────────────────────────────────────────
 p_corn, p_oil, p_meal = plot_food_products_by_policy(results_extended_analysis; vlines=vlines_data)
@@ -1098,3 +1089,77 @@ sort!(carbontax_df, :t)
 
 # 처음 20개 행 확인
 first(carbontax_df[!, [:t, :q_saf_atj_conv, :q_saf_atj_cs, :q_saf_hefa_nonsoy]], 20)
+
+## See if the Aviation fuel production increases when jet fuel supply function has a slope.
+taxcredit_df = sort(filter(r -> r.policy_type == "taxcredit", results_df), :p)
+
+SAF_COLS = [:q_saf_atj_conv, :q_saf_atj_cs, :q_saf_hefa_conv, :q_saf_hefa_cs, :q_saf_hefa_nonsoy]
+
+taxcredit_df[!, :total_saf] = sum(taxcredit_df[!, col] for col in SAF_COLS)
+taxcredit_df[!, :total_aviation_fuel] = taxcredit_df[!, :q_jet_fuel] .+ taxcredit_df[!, :total_saf]
+
+taxcredit_scenarios = sort_scenarios(results_extended_analysis.scenario_groups[:taxcredit])
+valid_scenarios = [s for s in taxcredit_scenarios if !isnothing(results_extended_analysis.solutions[s])]
+avi_miles = [results_extended_analysis.solutions[s].x[:avi] for s in valid_scenarios]
+
+taxcredit_df2 = sort(taxcredit_df, :p)
+
+println("p(\$/gal) | total_SAF  | Δsaf      | total_fuel | Δfuel     | avi_mile  | Δavi")
+println("-"^95)
+prev_saf = taxcredit_df2[1, :total_saf]
+prev_fuel = taxcredit_df2[1, :total_aviation_fuel]
+prev_avi = avi_miles[1]
+
+for (i, row) in enumerate(eachrow(taxcredit_df2))
+    Δsaf = row.total_saf - prev_saf
+    Δfuel = row.total_aviation_fuel - prev_fuel
+    Δavi = avi_miles[i] - prev_avi
+    @printf("%.2f     | %.6f | %+.6f | %.6f | %+.6f | %.6f | %+.6f\n",
+        row.p, row.total_saf, Δsaf, row.total_aviation_fuel, Δfuel, avi_miles[i], Δavi)
+    prev_saf = row.total_saf
+    prev_fuel = row.total_aviation_fuel
+    prev_avi = avi_miles[i]
+end
+
+p_vals = taxcredit_df2[!, :p]
+saf_vals = taxcredit_df2[!, :total_saf]
+fuel_vals = taxcredit_df2[!, :total_aviation_fuel]
+
+sq_saf = saf_vals[1]
+sq_fuel = fuel_vals[1]
+sq_mile = avi_miles[1]
+
+bg = RGB(0.96, 0.96, 0.94)
+
+begin
+    p1 = plot(p_vals, saf_vals,
+        xlabel="Tax Credit (\$/gallon)", ylabel="Billion gallons",
+        title="Total SAF Quantity",
+        titlefontsize=18, titlefontweight=:bold,
+        linewidth=3, color=:darkorange, legend=false, grid=true,
+        background_color_inside=bg, left_margin=15Plots.mm,
+        bottom_margin=10Plots.mm, guidefontsize=14, tickfontsize=12)
+    hline!(p1, [sq_saf], color=:gray, linestyle=:dash, linewidth=1.5)
+
+    p2 = plot(p_vals, fuel_vals,
+        xlabel="Tax Credit (\$/gallon)", ylabel="Billion gallons",
+        title="Total Aviation Fuel (Jet + SAF)",
+        titlefontsize=18, titlefontweight=:bold,
+        linewidth=3, color=:steelblue, legend=false, grid=true,
+        background_color_inside=bg, left_margin=15Plots.mm,
+        bottom_margin=10Plots.mm, guidefontsize=14, tickfontsize=12)
+    hline!(p2, [sq_fuel], color=:gray, linestyle=:dash, linewidth=1.5)
+
+    p3 = plot(p_vals, avi_miles,
+        xlabel="Tax Credit (\$/gallon)", ylabel="Billion miles",
+        title="Total Aviation Miles",
+        titlefontsize=18, titlefontweight=:bold,
+        linewidth=3, color=:darkred, legend=false, grid=true,
+        background_color_inside=bg, left_margin=15Plots.mm,
+        bottom_margin=10Plots.mm, guidefontsize=14, tickfontsize=12)
+    hline!(p3, [sq_mile], color=:gray, linestyle=:dash, linewidth=1.5)
+
+    display(plot(p1, p2, p3, layout=(1, 3), size=(1800, 550),
+        plot_title="Tax Credit Effects on Aviation Fuel & Miles",
+        plot_titlefontsize=20, plot_titlefontweight=:bold, margin=8Plots.mm))
+end
