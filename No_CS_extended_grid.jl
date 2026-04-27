@@ -2,11 +2,11 @@
 cd(@__DIR__)
 println("Working directory: ", pwd())
 
-include(joinpath(@__DIR__, "SAFModel.jl"))
-include(joinpath(@__DIR__, "analysis.jl"))
-import .SAFModel: params, build_unified_model, extract_solution,
+include(joinpath(@__DIR__, "No_CS_SAFModel.jl"))
+include(joinpath(@__DIR__, "No_CS_analysis.jl"))
+import .No_CS_SAFModel: params, build_unified_model, extract_solution,
     FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
-import .SAFAnalysis: calculate_emissions_detail, calculate_implicit_taxes,
+import .No_CS_SAFAnalysis: calculate_emissions_detail, calculate_implicit_taxes,
     calculate_cs_changes, calculate_ps_land_changes,
     calculate_gr_changes, calculate_environmental_benefit,
     calculate_total_welfare
@@ -374,60 +374,6 @@ function make_legend_panel(items; ncols=length(items), fontsize=14)
     return p
 end
 
-function plot_land_use_stacked_by_policy(results_extended_analysis; vlines=nothing)
-    solutions = results_extended_analysis.solutions
-    omega = params.coeff.omega
-
-    # 전체 y축 최대값 통일
-    all_max = maximum(
-        (solutions[s].l_n + solutions[s].l_cs) * 1000
-        for s in keys(solutions) if !isnothing(solutions[s])
-    )
-    ylims_fixed = (0, all_max * 1.1)
-
-    plots_list = []
-
-    for (policy_type, _, xlabel, title) in POLICIES
-        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
-        xs = [get_x(s, policy_type) for s in sorted if !isnothing(solutions[s])]
-
-        total_n = [(solutions[s].l_n) * 1000 for s in sorted if !isnothing(solutions[s])]
-        total_cs = [(solutions[s].l_cs) * 1000 for s in sorted if !isnothing(solutions[s])]
-
-        p = plot(xlabel=xlabel, ylabel="Million Acres",
-            title=title, titlefontsize=22, titlefontweight=:bold,
-            legend=false, grid=true,
-            xlims=extrema(xs), ylims=ylims_fixed,
-            left_margin=15Plots.mm, bottom_margin=12Plots.mm,
-            guidefontsize=18, tickfontsize=14)
-
-        plot!(p, xs, total_n,
-            fillrange=0, fillalpha=0.7, fillcolor=:steelblue,
-            linewidth=1.5, color=:steelblue, label="")
-
-        plot!(p, xs, total_n .+ total_cs,
-            fillrange=total_n, fillalpha=0.7, fillcolor=:orange,
-            linewidth=1.5, color=:orange, label="")
-
-        add_vlines!(p, policy_type, vlines; annotate_y=ylims_fixed[2] * 0.97)
-        push!(plots_list, p)
-    end
-
-    p_leg = make_legend_panel(
-        [("Conventional", :steelblue), ("Climate-Smart", :orange)],
-        ncols=2, fontsize=16)
-
-    return plot(
-        plot(plots_list..., layout=(2, 2)),
-        p_leg,
-        layout=grid(2, 1, heights=[0.93, 0.07]),
-        size=(2200, 1600),
-        plot_title="Total Land Use by Policy Stringency",
-        plot_titlefontsize=22, plot_titlefontweight=:bold,
-        margin=10Plots.mm)
-end
-
-display(plot_land_use_stacked_by_policy(results_extended_analysis; vlines=vlines_data))
 # ── Stacked fuel production ──────────────────────────────────────────────────
 function plot_fuel_production_stacked(results_df, fuel_config; vlines=nothing)
     plots = []

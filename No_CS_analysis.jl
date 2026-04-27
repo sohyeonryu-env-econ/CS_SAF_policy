@@ -1,7 +1,7 @@
 # analysis.jl
 
-module SAFAnalysis
-import Main.SAFModel: build_unified_model, extract_solution, tax_credit_rate, FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
+module No_CS_SAFAnalysis
+import Main.No_CS_SAFModel: build_unified_model, extract_solution, tax_credit_rate, FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
 using JLD2
 using DataFrames
 using Printf
@@ -58,15 +58,16 @@ function calculate_implicit_taxes(solution, params, config)
         # 2. RFS aviation component
         if g == :jet_fuel
             implicit_tax[g][:rfs_avi] = γ_avi * θ_avi
-        else  # SAF goods
+        elseif g in [:saf_atj_conv, :saf_hefa_conv, :saf_hefa_nonsoy]  # CS 제외
             implicit_tax[g][:rfs_avi] = (delta[g] <= 0.5 * delta[:jet_fuel]) ? -γ_avi * 1.6 : 0.0
         end
 
         # 3. LCFS component
-        implicit_tax[g][:lcfs] = -μ * ((1 - σ) * delta[:jet_fuel] - delta[g])
+        implicit_tax[g][:lcfs] = g in [:jet_fuel, :saf_atj_conv, :saf_hefa_conv, :saf_hefa_nonsoy] ?
+                                 -μ * ((1 - σ) * delta[:jet_fuel] - delta[g]) : 0.0
 
         # 4. Tax credit component (SAF only)
-        if g != :jet_fuel
+        if g in [:saf_atj_conv, :saf_hefa_conv, :saf_hefa_nonsoy]
             implicit_tax[g][:tax_credit] = -tax_credit_rate(delta_mj[g], baselineCI, p)
         end
 
@@ -367,7 +368,6 @@ function calculate_ps_land_changes(solutions, solution_sq, params; scenarios=not
     return ps_land_changes
 end
 
-
 function display_ps_land_changes(ps_land_changes; scenarios=nothing,
     title="LAND PRODUCER SURPLUS CHANGES (billion \$)")
     scenario_list = isnothing(scenarios) ? collect(keys(ps_land_changes)) : scenarios
@@ -389,7 +389,7 @@ end
 function calculate_gov_revenue_change(solution_policy, implicit_taxes_policy, scenario)
     AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
-    ELIGIBLE_SAF = [:saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    ELIGIBLE_SAF = [:saf_hefa_conv, :saf_hefa_nonsoy]
     scenario_str = String(scenario)
     is_carbontax = startswith(scenario_str, "carbontax")
     is_taxcredit = startswith(scenario_str, "taxcredit")
