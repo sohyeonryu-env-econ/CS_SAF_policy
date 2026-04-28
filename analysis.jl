@@ -9,7 +9,7 @@ using JuMP
 
 const SCC = 190
 const POL = [:carbontax, :rfs, :lcfs, :taxcredit]
-const SQ_CONFIG = (t=0.0, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
+const SQ_CONFIG = (t=0.0, θ_avi=0.0, σ=0.0, p=0.0, use_ci_threshold=false, recognize_cs=true)
 
 
 # =====================
