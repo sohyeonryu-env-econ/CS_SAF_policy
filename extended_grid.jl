@@ -64,21 +64,21 @@ function create_policy_scenarios()
     scenarios = Dict()
     for t in POLICY_RANGES.t
         scenarios[Symbol("carbontax_$(round(Int,t))")] =
-            (t=Float64(t), θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
+            (t=Float64(t), θ_avi=0.0, σ=0.0, p=0.0, use_ci_threshold=false, recognize_cs=true)
     end
     for θ in POLICY_RANGES.θ_avi
         scenarios[Symbol("rfs_$(round(Int, θ*1000))")] =
-            (t=0.0, θ_avi=Float64(θ), σ=0.0, p=0.0, carbon_tax_scope=:aviation)
+            (t=0.0, θ_avi=Float64(θ), σ=0.0, p=0.0, use_ci_threshold=true, recognize_cs=true)
     end
     for σ in POLICY_RANGES.σ
         scenarios[Symbol("lcfs_$(round(Int, σ*1000))")] =
-            (t=0.0, θ_avi=0.0, σ=Float64(σ), p=0.0, carbon_tax_scope=:aviation)
+            (t=0.0, θ_avi=0.0, σ=Float64(σ), p=0.0, use_ci_threshold=false, recognize_cs=true)
     end
     for p in POLICY_RANGES.p
         scenarios[Symbol("taxcredit_$(round(Int, p*100))")] =
-            (t=0.0, θ_avi=0.0, σ=0.0, p=Float64(p), carbon_tax_scope=:aviation)
+            (t=0.0, θ_avi=0.0, σ=0.0, p=Float64(p), use_ci_threshold=true, recognize_cs=true)
     end
-    scenarios[:statusquo] = (t=0.0, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
+    scenarios[:statusquo] = (t=0.0, θ_avi=0.0, σ=0.0, p=0.0, use_ci_threshold=true, recognize_cs=true)
     return scenarios
 end
 
@@ -239,6 +239,7 @@ vlines_data = Dict(pt => [(ep_3B[pt].policy_value, "3B"), (ep_5B[pt].policy_valu
 # =================================================================================
 # 5. MAC Plot
 # =================================================================================
+
 
 function plot_mac_comparison_simple(results_extended_analysis, mac_extended;
     vlines_abatement=nothing, y_max=2200.0, y_min=-250.0, fig_size=(1800, 1400))
@@ -862,6 +863,71 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
 end
 display(plot_implicit_tax_by_policy(results_extended_analysis; vlines=vlines_data))
 
+function plot_nonsoy_price_by_policy(results_extended_analysis; vlines=nothing)
+    solutions = results_extended_analysis.solutions
+
+    plots_list = []
+    for (policy_type, _, xlabel, title) in POLICIES
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        xs = Float64[]
+        ys = Float64[]
+        for s in sorted
+            sol = solutions[s]
+            isnothing(sol) && continue
+            push!(xs, get_x(s, policy_type))
+            push!(ys, sol.p_f[:feedstock_nonsoy])
+        end
+
+        p = plot(xlabel=xlabel, ylabel="\$/lb", title=title,
+            titlefontsize=18, titlefontweight=:bold,
+            legend=false, grid=true,
+            left_margin=15Plots.mm, bottom_margin=12Plots.mm,
+            guidefontsize=16, tickfontsize=13)
+        plot!(p, xs, ys, linewidth=2.5, color=:purple)
+        hline!(p, [0.49], color=:gray, linestyle=:dash, linewidth=1.5, label="baseline")
+        add_vlines!(p, policy_type, vlines; annotate_y=maximum(ys) * 0.97)
+        push!(plots_list, p)
+    end
+
+    return plot(plots_list..., layout=(2, 2), size=(2000, 1400),
+        plot_title="Non-soy Feedstock Price by Policy Stringency",
+        plot_titlefontsize=20, plot_titlefontweight=:bold, margin=10Plots.mm)
+end
+
+display(plot_nonsoy_price_by_policy(results_extended_analysis; vlines=vlines_data))
+
+function plot_nonsoy_quantity_by_policy(results_extended_analysis; vlines=nothing)
+    solutions = results_extended_analysis.solutions
+
+    plots_list = []
+    for (policy_type, _, xlabel, title) in POLICIES
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        xs = Float64[]
+        ys = Float64[]
+        for s in sorted
+            sol = solutions[s]
+            isnothing(sol) && continue
+            push!(xs, get_x(s, policy_type))
+            push!(ys, sol.q_feedstock[:nonsoy])
+        end
+
+        p = plot(xlabel=xlabel, ylabel="Billion lb", title=title,
+            titlefontsize=18, titlefontweight=:bold,
+            legend=false, grid=true,
+            left_margin=15Plots.mm, bottom_margin=12Plots.mm,
+            guidefontsize=16, tickfontsize=13)
+        plot!(p, xs, ys, linewidth=2.5, color=:purple)
+        hline!(p, [28.97], color=:gray, linestyle=:dash, linewidth=1.5, label="baseline")
+        add_vlines!(p, policy_type, vlines; annotate_y=maximum(ys) * 0.97)
+        push!(plots_list, p)
+    end
+
+    return plot(plots_list..., layout=(2, 2), size=(2000, 1400),
+        plot_title="Non-soy Feedstock Quantity by Policy Stringency",
+        plot_titlefontsize=20, plot_titlefontweight=:bold, margin=10Plots.mm)
+end
+
+display(plot_nonsoy_quantity_by_policy(results_extended_analysis; vlines=vlines_data))
 # =================================================================================
 # 8. Generate & Display All Plots
 # =================================================================================
@@ -928,6 +994,7 @@ display(plot_prices_by_policy(results_extended_analysis,
                                 β[(:biodiesel, :diesel)] : β[(:rd, :diesel)]) * sol.p_c[:die],
     (0, 6.5), sol -> sol.p_c[:die], (0.0, 2.0), "\$/diesel mile", :brown, "Diesel Consumer Price",
     ""; vlines=vlines_data))
+
 
 display(plot_feedstock_prices_by_policy(results_extended_analysis; vlines=vlines_data))
 
@@ -1018,7 +1085,7 @@ function plot_dual_variables_by_policy(results_extended_analysis; vlines=nothing
         (:λ_rfs, "λ RFS D6", :steelblue),
         (:λ_blendwall_ethanol, "λ Blendwall (Ethanol)", :orange),
         (:λ_blendwall_biodiesel, "λ Blendwall (Biodiesel)", :green),
-        (:λ_nonsoy_capacity, "λ Non-soy Capacity", :red),
+        #(:λ_nonsoy_capacity, "λ Non-soy Capacity", :red),
     ]
 
     all_plots = []

@@ -21,7 +21,7 @@ const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-Univers
 # =================================================================================
 
 base_configs = (
-    statusquo=(t=0.0, θ_avi=0.0, σ=0.0, p=0.0, use_ci_threshold=false, recognize_cs=false),
+    statusquo=(t=0.0, θ_avi=0.0, σ=0.0, p=0.0, use_ci_threshold=false, recognize_cs=true),
     firstbest=(t=190.0, θ_avi=0.0, σ=0.0, p=0.0, use_ci_threshold=false, recognize_cs=true),
 )
 
