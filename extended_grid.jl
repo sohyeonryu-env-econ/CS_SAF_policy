@@ -91,29 +91,56 @@ const EXTENDED_POLICY_MATRIX = create_policy_scenarios()
 function run_extended_analysis(params, policy_configs; verbose=true)
     results, solutions = Dict(), Dict()
     solved = failed = 0
-    for (name, config) in policy_configs
-        try
-            model = build_unified_model(params, config)
-            optimize!(model)
-            if is_solved_and_feasible(model)
-                sol = extract_solution(model, name)
-                sol = merge(sol, (emissions=calculate_emissions_detail(sol, params),))
-                if name != :statusquo
+
+    # statusquo를 먼저 풀어서 warm_start 확보
+    base_sol = nothing
+    sq_config = policy_configs[:statusquo]
+    sq_model = build_unified_model(params, sq_config; warm_start=nothing)
+    optimize!(sq_model)
+    if is_solved_and_feasible(sq_model)
+        base_sol = extract_solution(sq_model, :statusquo)
+        base_sol = merge(base_sol, (emissions=calculate_emissions_detail(base_sol, params),))
+        results[:statusquo] = sq_model
+        solutions[:statusquo] = base_sol
+        solved += 1
+    end
+
+    # 정책별로 순차적으로 풀되 이전 해를 warm_start로 사용
+    policy_groups = Dict(
+        :carbontax => sort([(k, v) for (k, v) in policy_configs if startswith(String(k), "carbontax_")], by=p -> p[2].t),
+        :rfs => sort([(k, v) for (k, v) in policy_configs if startswith(String(k), "rfs_")], by=p -> p[2].θ_avi),
+        :lcfs => sort([(k, v) for (k, v) in policy_configs if startswith(String(k), "lcfs_")], by=p -> p[2].σ),
+        :taxcredit => sort([(k, v) for (k, v) in policy_configs if startswith(String(k), "taxcredit_")], by=p -> p[2].p),
+    )
+
+    for (policy_type, group) in policy_groups
+        prev_sol = policy_type == :taxcredit ? nothing : base_sol
+        #prev_sol = base_sol  # 각 정책 그룹 시작시 statusquo 해로 초기화
+        for (name, config) in group
+            try
+                model = build_unified_model(params, config; warm_start=prev_sol)
+                optimize!(model)
+                if is_solved_and_feasible(model)
+                    sol = extract_solution(model, name)
+                    sol = merge(sol, (emissions=calculate_emissions_detail(sol, params),))
                     sol = merge(sol, (implicit_taxes=calculate_implicit_taxes(sol, params, config),))
+                    results[name], solutions[name] = model, sol
+                    prev_sol = policy_type == :taxcredit ? nothing : sol
+                    #prev_sol = sol  # 다음 스텝의 warm_start로 사용
+                    solved += 1
+                else
+                    verbose && println("  ✗ $name: Failed")
+                    results[name] = solutions[name] = nothing
+                    failed += 1
                 end
-                results[name], solutions[name] = model, sol
-                solved += 1
-            else
-                verbose && println("  ✗ $name: Failed")
+            catch e
+                verbose && println("  ✗ $name: Error - $e")
                 results[name] = solutions[name] = nothing
                 failed += 1
             end
-        catch e
-            verbose && println("  ✗ $name: Error - $e")
-            results[name] = solutions[name] = nothing
-            failed += 1
         end
     end
+
     verbose && @printf("\nSolved: %d / %d  |  Failed: %d\n", solved, solved + failed, failed)
     return results, solutions
 end
@@ -398,6 +425,9 @@ function plot_fuel_production_stacked(results_df, fuel_config; vlines=nothing)
         cumsum_vals = copy(main_vals)
         for (col, _, color) in biofuel_sorted
             col_vals = df[!, col]
+            # 최대값이 threshold 미만이면 skip
+            maximum(col_vals) < 1e-4 && continue
+
             new_cum = cumsum_vals .+ col_vals
             plot!(p, x_vals, new_cum, fillrange=cumsum_vals,
                 fillalpha=0.7, fillcolor=color, linewidth=1.5, color=color, label="")
@@ -1163,3 +1193,405 @@ begin
         plot_title="Tax Credit Effects on Aviation Fuel & Miles",
         plot_titlefontsize=20, plot_titlefontweight=:bold, margin=8Plots.mm))
 end
+
+# MAC 요소 분해 분석
+function analyze_mac_components(results_extended_analysis, params; policy_type=:taxcredit)
+
+    sg = results_extended_analysis.scenario_groups
+    group = sg[policy_type]
+    solutions = results_extended_analysis.solutions
+    sq = solutions[:statusquo]
+
+    # policy stringency 기준으로 정렬
+    sorted_scenarios = sort(collect(group), by=s -> begin
+        str = String(s)
+        parts = split(str, "_")
+        parse(Float64, parts[end])
+    end)
+
+    # 결과 저장
+    rows = []
+    em_sq = sq.emissions.total
+
+    prev_private = nothing
+    prev_abate = nothing
+
+    for s in sorted_scenarios
+        sol = solutions[s]
+        isnothing(sol) && continue
+
+        # stringency 값
+        str = String(s)
+        x_val = parse(Float64, split(str, "_")[end]) / (
+            policy_type == :carbontax ? 1.0 :
+            policy_type == :rfs ? 1000.0 :
+            policy_type == :lcfs ? 1000.0 : 100.0
+        )
+
+        # welfare 요소
+        cs = results_extended_analysis.cs_changes[s][:total]
+        ps = results_extended_analysis.ps_land_changes[s].ps_change
+        gr = results_extended_analysis.gr_changes[s].total
+        env = results_extended_analysis.env_benefits[s].total_benefit
+        private = cs + ps + gr
+        social = private + env
+
+        # abatement
+        em = sol.emissions.total
+        abate = em_sq - em
+
+        # marginal MAC (인접 스텝 간 차분)
+        mac_private_marginal = isnothing(prev_private) ? NaN :
+                               -(private - prev_private) / (abate - prev_abate)
+        mac_social_marginal = isnothing(prev_private) ? NaN :
+                              -(social - (prev_private + results_extended_analysis.env_benefits[s].total_benefit)) /
+                              (abate - prev_abate)
+
+        push!(rows, (
+            scenario=s,
+            x_val=x_val,
+            cs=cs,
+            ps=ps,
+            gr=gr,
+            env=env,
+            private=private,
+            social=social,
+            abatement=abate,
+            Δprivate=isnothing(prev_private) ? NaN : private - prev_private,
+            Δabate=isnothing(prev_abate) ? NaN : abate - prev_abate,
+            mac_private=abs(abate) > 1e-10 ? -private / abate : NaN,
+            mac_social=abs(abate) > 1e-10 ? -social / abate : NaN,
+            mac_private_m=mac_private_marginal,
+            mac_social_m=mac_social_marginal,
+            λ_nonsoy=sol.duals.λ_nonsoy_capacity,
+            λ_rfs_avi=sol.duals.λ_rfs_avi,
+            λ_lcfs=sol.duals.λ_lcfs,
+            r_land=sol.duals.r_land,
+            q_nonsoy_hefa=sol.q[:saf_hefa_nonsoy],
+        ))
+
+        prev_private = private
+        prev_abate = abate
+    end
+
+    df = DataFrame(rows)
+
+    # MAC이 튀는 구간 찾기 (marginal MAC 절댓값이 갑자기 커지는 곳)
+    println("\n=== MAC 급변 구간 (|ΔMAC_private_marginal| > 500) ===")
+    if nrow(df) > 1
+        for i in 2:nrow(df)
+            if !isnan(df.mac_private_m[i]) && !isnan(df.mac_private_m[i-1])
+                jump = abs(df.mac_private_m[i] - df.mac_private_m[i-1])
+                if jump > 500
+                    println("  $(df.scenario[i]): x=$(df.x_val[i]), " *
+                            "ΔMAC=$(round(jump,digits=1)), " *
+                            "Δabate=$(round(df.Δabate[i],digits=6)), " *
+                            "Δprivate=$(round(df.Δprivate[i],digits=6)), " *
+                            "λ_nonsoy=$(round(df.λ_nonsoy[i],digits=4)), " *
+                            "q_nonsoy=$(round(df.q_nonsoy_hefa[i],digits=4))")
+                end
+            end
+        end
+    end
+
+    return df
+end
+
+# 실행
+df_mac = analyze_mac_components(results_extended_analysis, params; policy_type=:taxcredit)
+
+# 전체 테이블 출력 (주요 컬럼만)
+println("\n=== Tax Credit MAC 요소 분해 ===")
+show(select(df_mac, :x_val, :cs, :ps, :gr, :private, :abatement,
+        :Δprivate, :Δabate, :mac_private_m, :λ_nonsoy, :q_nonsoy_hefa),
+    allrows=true)
+
+function analyze_emission_components(results_extended_analysis, params; policy_type=:taxcredit)
+
+    sg = results_extended_analysis.scenario_groups
+    group = sg[policy_type]
+    solutions = results_extended_analysis.solutions
+
+    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
+        :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    delta = params.coeff.delta
+
+    sorted_scenarios = sort(collect(group), by=s -> begin
+        str = String(s)
+        parse(Float64, split(str, "_")[end])
+    end)
+
+    rows = []
+    for s in sorted_scenarios
+        sol = solutions[s]
+        isnothing(sol) && continue
+
+        x_val = parse(Float64, split(String(s), "_")[end]) / 100.0
+
+        push!(rows, (
+            x_val=x_val,
+            em_total=sol.emissions.total,
+            em_aviation=sol.emissions.aviation,
+            q_jet_fuel=sol.q[:jet_fuel],
+            q_saf_atj_conv=sol.q[:saf_atj_conv],
+            q_saf_atj_cs=sol.q[:saf_atj_cs],
+            q_saf_hefa_conv=sol.q[:saf_hefa_conv],
+            q_saf_hefa_cs=sol.q[:saf_hefa_cs],
+            q_nonsoy_hefa=sol.q[:saf_hefa_nonsoy],
+            # 각 fuel별 emissions
+            em_jet=delta[:jet_fuel] * sol.q[:jet_fuel],
+            em_atj_conv=delta[:saf_atj_conv] * sol.q[:saf_atj_conv],
+            em_atj_cs=delta[:saf_atj_cs] * sol.q[:saf_atj_cs],
+            em_hefa_conv=delta[:saf_hefa_conv] * sol.q[:saf_hefa_conv],
+            em_hefa_cs=delta[:saf_hefa_cs] * sol.q[:saf_hefa_cs],
+            em_nonsoy=delta[:saf_hefa_nonsoy] * sol.q[:saf_hefa_nonsoy],
+        ))
+    end
+
+    df = DataFrame(rows)
+
+    # 인접 스텝 간 변화량 추가
+    for col in [:em_total, :em_aviation, :q_jet_fuel, :q_nonsoy_hefa,
+        :em_jet, :em_atj_conv, :em_hefa_conv, :em_nonsoy]
+        Δcol = Symbol("Δ", col)
+        df[!, Δcol] = [NaN; diff(df[!, col])]
+    end
+
+    # 튀는 구간 찾기: Δem_total이 인접 구간 평균과 크게 다른 곳
+    println("\n=== Emission 변동 이상 구간 (|Δem_total - median| > 2*std) ===")
+    valid = df[.!isnan.(df.Δem_total), :]
+    med = median(valid.Δem_total)
+    sd = std(valid.Δem_total)
+    for row in eachrow(valid)
+        if abs(row.Δem_total - med) > 2 * sd
+            println("  x=$(row.x_val): " *
+                    "Δem_total=$(round(row.Δem_total, sigdigits=4)), " *
+                    "Δem_jet=$(round(row.Δem_jet, sigdigits=4)), " *
+                    "Δem_nonsoy=$(round(row.Δem_nonsoy, sigdigits=4)), " *
+                    "Δq_jet=$(round(row.Δq_jet_fuel, sigdigits=4)), " *
+                    "Δq_nonsoy=$(round(row.Δq_nonsoy_hefa, sigdigits=4))")
+        end
+    end
+
+    return df
+end
+
+df_em = analyze_emission_components(results_extended_analysis, params; policy_type=:taxcredit)
+
+# 유효 구간만 출력
+println("\n=== Tax Credit Emission 요소 분해 (x >= 5.2) ===")
+show(filter(r -> r.x_val >= 5.2,
+        select(df_em, :x_val, :q_jet_fuel, :q_nonsoy_hefa,
+            :em_jet, :em_nonsoy, :em_aviation, :em_total,
+            :Δem_total, :Δem_jet, :Δem_nonsoy)),
+    allrows=true)
+
+function analyze_emission_components_v2(results_extended_analysis, params; policy_type=:taxcredit)
+
+    sg = results_extended_analysis.scenario_groups
+    group = sg[policy_type]
+    solutions = results_extended_analysis.solutions
+
+    AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
+        :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    ROAD_FUELS = [:gasoline, :ethanol, :diesel,
+        :biodiesel_soy, :biodiesel_nonsoy, :rd_soy, :rd_nonsoy]
+    delta = params.coeff.delta
+
+    sorted_scenarios = sort(collect(group), by=s -> begin
+        parse(Float64, split(String(s), "_")[end])
+    end)
+
+    rows = []
+    for s in sorted_scenarios
+        sol = solutions[s]
+        isnothing(sol) && continue
+
+        x_val = parse(Float64, split(String(s), "_")[end]) / 100.0
+
+        em_road = sum(delta[g] * sol.q[g] for g in ROAD_FUELS)
+        em_food = delta[:corn] * (sol.x[:corn] - sol.ddgs) +
+                  delta[:soyoil] * sol.x[:soyoil]
+
+        push!(rows, (
+            x_val=x_val,
+            em_aviation=sol.emissions.aviation,
+            em_road=em_road,
+            em_food=em_food,
+            em_total=sol.emissions.total,
+            # road 세부
+            em_gasoline=delta[:gasoline] * sol.q[:gasoline],
+            em_ethanol=delta[:ethanol] * sol.q[:ethanol],
+            em_diesel=delta[:diesel] * sol.q[:diesel],
+            em_biodiesel_s=delta[:biodiesel_soy] * sol.q[:biodiesel_soy],
+            em_rd_soy=delta[:rd_soy] * sol.q[:rd_soy],
+            # food 세부
+            em_corn=delta[:corn] * (sol.x[:corn] - sol.ddgs),
+            em_soyoil=delta[:soyoil] * sol.x[:soyoil],
+        ))
+    end
+
+    df = DataFrame(rows)
+
+    for col in [:em_aviation, :em_road, :em_food, :em_total,
+        :em_gasoline, :em_ethanol, :em_diesel,
+        :em_biodiesel_s, :em_rd_soy, :em_corn, :em_soyoil]
+        Δcol = Symbol("Δ", col)
+        df[!, Δcol] = [NaN; diff(df[!, col])]
+    end
+
+    # 튀는 구간: Δem_total이 중앙값에서 2*std 벗어나는 곳
+    valid = filter(r -> !isnan(r.Δem_total) && r.x_val >= 5.2, df)
+    med = median(valid.Δem_total)
+    sd = std(valid.Δem_total)
+
+    println("\n=== Δem_total 이상 구간 (x >= 5.2) ===")
+    for row in eachrow(valid)
+        if abs(row.Δem_total - med) > 2 * sd
+            println("x=$(row.x_val): " *
+                    "Δtotal=$(round(row.Δem_total, sigdigits=3)), " *
+                    "Δavi=$(round(row.Δem_aviation, sigdigits=3)), " *
+                    "Δroad=$(round(row.Δem_road, sigdigits=3)), " *
+                    "Δfood=$(round(row.Δem_food, sigdigits=3)), " *
+                    "Δgas=$(round(row.Δem_gasoline, sigdigits=3)), " *
+                    "Δeth=$(round(row.Δem_ethanol, sigdigits=3)), " *
+                    "Δdiesel=$(round(row.Δem_diesel, sigdigits=3)), " *
+                    "Δbio_s=$(round(row.Δem_biodiesel_s, sigdigits=3)), " *
+                    "Δrd_s=$(round(row.Δem_rd_soy, sigdigits=3)), " *
+                    "Δcorn=$(round(row.Δem_corn, sigdigits=3)), " *
+                    "Δsoyoil=$(round(row.Δem_soyoil, sigdigits=3))")
+        end
+    end
+
+    return df
+end
+
+df_em2 = analyze_emission_components_v2(results_extended_analysis, params; policy_type=:taxcredit)
+
+println("\n=== Road/Food emission 변화 (x >= 5.2, 샘플) ===")
+show(filter(r -> r.x_val >= 5.2,
+        select(df_em2, :x_val, :em_aviation, :em_road, :em_food, :em_total,
+            :Δem_aviation, :Δem_road, :Δem_food, :Δem_total))[1:5:end, :],
+    allrows=true)
+
+function analyze_road_emission_detail(results_extended_analysis, params; policy_type=:taxcredit)
+
+    sg = results_extended_analysis.scenario_groups
+    group = sg[policy_type]
+    solutions = results_extended_analysis.solutions
+
+    ROAD_FUELS = [:gasoline, :ethanol, :diesel,
+        :biodiesel_soy, :biodiesel_nonsoy, :rd_soy, :rd_nonsoy]
+    delta = params.coeff.delta
+
+    sorted_scenarios = sort(collect(group), by=s -> begin
+        parse(Float64, split(String(s), "_")[end])
+    end)
+
+    rows = []
+    for s in sorted_scenarios
+        sol = solutions[s]
+        isnothing(sol) && continue
+        x_val = parse(Float64, split(String(s), "_")[end]) / 100.0
+        x_val >= 5.2 || continue
+
+        push!(rows, (
+            x_val=x_val,
+            em_road=sum(delta[g] * sol.q[g] for g in ROAD_FUELS),
+            em_gasoline=delta[:gasoline] * sol.q[:gasoline],
+            em_ethanol=delta[:ethanol] * sol.q[:ethanol],
+            em_diesel=delta[:diesel] * sol.q[:diesel],
+            em_bio_soy=delta[:biodiesel_soy] * sol.q[:biodiesel_soy],
+            em_bio_nonsoy=delta[:biodiesel_nonsoy] * sol.q[:biodiesel_nonsoy],
+            em_rd_soy=delta[:rd_soy] * sol.q[:rd_soy],
+            em_rd_nonsoy=delta[:rd_nonsoy] * sol.q[:rd_nonsoy],
+            q_gasoline=sol.q[:gasoline],
+            q_ethanol=sol.q[:ethanol],
+            q_diesel=sol.q[:diesel],
+            q_bio_soy=sol.q[:biodiesel_soy],
+            q_bio_nonsoy=sol.q[:biodiesel_nonsoy],
+            q_rd_soy=sol.q[:rd_soy],
+            q_rd_nonsoy=sol.q[:rd_nonsoy],
+        ))
+    end
+
+    df = DataFrame(rows)
+
+    for col in [:em_road, :em_gasoline, :em_ethanol, :em_diesel,
+        :em_bio_soy, :em_bio_nonsoy, :em_rd_soy, :em_rd_nonsoy,
+        :q_gasoline, :q_ethanol, :q_diesel,
+        :q_bio_soy, :q_bio_nonsoy, :q_rd_soy, :q_rd_nonsoy]
+        Δcol = Symbol("Δ", col)
+        df[!, Δcol] = [NaN; diff(df[!, col])]
+    end
+
+    # 튀는 구간
+    valid = filter(r -> !isnan(r.Δem_road), df)
+    med = median(valid.Δem_road)
+    sd = std(valid.Δem_road)
+
+    println("\n=== Δem_road 이상 구간 (|Δem_road - median| > 2*std) ===")
+    for row in eachrow(valid)
+        if abs(row.Δem_road - med) > 2 * sd
+            println("x=$(row.x_val): " *
+                    "Δroad=$(round(row.Δem_road, sigdigits=3)), " *
+                    "Δgas=$(round(row.Δem_gasoline, sigdigits=3)), " *
+                    "Δeth=$(round(row.Δem_ethanol, sigdigits=3)), " *
+                    "Δdiesel=$(round(row.Δem_diesel, sigdigits=3)), " *
+                    "Δbio_soy=$(round(row.Δem_bio_soy, sigdigits=3)), " *
+                    "Δbio_nonsoy=$(round(row.Δem_bio_nonsoy, sigdigits=3)), " *
+                    "Δrd_soy=$(round(row.Δem_rd_soy, sigdigits=3)), " *
+                    "Δrd_nonsoy=$(round(row.Δem_rd_nonsoy, sigdigits=3))")
+        end
+    end
+
+    return df
+end
+
+df_road = analyze_road_emission_detail(results_extended_analysis, params; policy_type=:taxcredit)
+
+# RFS aviation에서 conventional HEFA 생산량 확인
+function check_conv_hefa_rfs(results_extended_analysis)
+    sg = results_extended_analysis.scenario_groups
+    group = sg[:rfs]
+    solutions = results_extended_analysis.solutions
+
+    sorted_scenarios = sort(collect(group), by=s -> begin
+        parse(Float64, split(String(s), "_")[end])
+    end)
+
+    rows = []
+    for s in sorted_scenarios
+        sol = solutions[s]
+        isnothing(sol) && continue
+
+        θ_avi = parse(Float64, split(String(s), "_")[end]) / 1000.0
+
+        push!(rows, (
+            θ_avi=θ_avi,
+            q_saf_hefa_conv=sol.q[:saf_hefa_conv],
+            q_saf_hefa_cs=sol.q[:saf_hefa_cs],
+            q_saf_hefa_nonsoy=sol.q[:saf_hefa_nonsoy],
+            q_saf_atj_conv=sol.q[:saf_atj_conv],
+            q_saf_atj_cs=sol.q[:saf_atj_cs],
+            q_jet_fuel=sol.q[:jet_fuel],
+            λ_rfs_avi=sol.duals.λ_rfs_avi,
+            λ_nonsoy_capacity=sol.duals.λ_nonsoy_capacity,
+            p_f_soy_n=sol.p_f[:feedstock_soy_n],
+            p_f_soy_cs=sol.p_f[:feedstock_soy_cs],
+        ))
+    end
+
+    df = DataFrame(rows)
+
+    println("\n=== RFS Aviation: Conventional HEFA 생산량 확인 ===")
+    println("(q_saf_hefa_conv > 0 인 구간)")
+    show(filter(r -> r.q_saf_hefa_conv > 1e-6, df), allrows=true)
+
+    println("\n\n=== RFS Aviation: 전체 SAF 생산량 (샘플) ===")
+    show(df[1:10:end, :], allrows=true)
+
+    return df
+end
+
+df_rfs = check_conv_hefa_rfs(results_extended_analysis)
