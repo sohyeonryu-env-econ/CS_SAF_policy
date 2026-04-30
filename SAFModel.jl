@@ -388,8 +388,10 @@ function build_unified_model(params, config)
         q[g in FUEL_GOODS] >= 0 # supply quantities
         p_f[f in FEEDSTOCK_GOODS] >= 0 # feedstock price
         p_c[s in [:avi, :gas, :die, :soymeal]] >= 0 # consumer's price on x
-        l_n >= 0 # conventional land use
-        l_cs >= 0 # climate-smart land use
+        l_corn_n >= 0 # conventional land use
+        l_corn_cs >= 0 # climate-smart land use
+        l_soy_n >= 0
+        l_soy_cs >= 0
 
     end
 
@@ -402,7 +404,9 @@ function build_unified_model(params, config)
     # Policy-specific dual variables 
     @variable(model, λ_rfs_avi >= 0)      # RFS aviation
     @variable(model, λ_lcfs >= 0)         # LCFS
-    @variable(model, r_land >= 1)    # Land rent
+    #@variable(model, r_land )    # Land rent
+    @variable(model, r_corn >= 1)    # Shadow price for corn land use constraint
+    @variable(model, r_soy >= 1)     # Shadow price for soy land use constraint
 
     # Variable naming
     for g in FUEL_GOODS
@@ -410,9 +414,13 @@ function build_unified_model(params, config)
     end
 
     # I need initial values for the non linear solver to converge. (CET)
-    set_start_value(l_n, L0)
-    set_start_value(l_cs, 0.0)
-    set_start_value(r_land, r0_land)
+    set_start_value(l_corn_n, L0 / 2)
+    set_start_value(l_corn_cs, 0.0)
+    set_start_value(l_soy_n, L0 / 2)
+    set_start_value(l_soy_cs, 0.0)
+    #set_start_value(r_land, r0_land)
+    set_start_value(r_corn, r0_land)
+    set_start_value(r_soy, r0_land)
     for f in FEEDSTOCK_GOODS
         set_start_value(p_f[f], 5.0)
     end
@@ -483,21 +491,12 @@ function build_unified_model(params, config)
     # =====================
     # Upstream farmers
     # =====================
-    # Revenue per acre($/acre): 2 crops * 2 practices
-    @expression(model, R_corn_n, gamma[:feedstock_corn_n] * p_f[:feedstock_corn_n])
-    @expression(model, R_corn_cs, gamma[:feedstock_corn_cs] * p_f[:feedstock_corn_cs])
-    @expression(model, R_soy_n, gamma[:feedstock_soy_n] * (p_f[:feedstock_soy_n] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal))
-    @expression(model, R_soy_cs, gamma[:feedstock_soy_cs] * (p_f[:feedstock_soy_cs] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal))
 
-    # Marginal revenue per acre ($/acre): 2 practices
-    @expression(model, marginal_revenue_n, (omega * R_corn_n^(1 + σ_cet) + (1 - omega) * R_soy_n^(1 + σ_cet))^(1 / (1 + σ_cet)))
-    @expression(model, marginal_revenue_cs, (omega * R_corn_cs^(1 + σ_cet) + (1 - omega) * R_soy_cs^(1 + σ_cet))^(1 / (1 + σ_cet)))
-
-    # feedstock production quantities
-    @expression(model, q_corn_n, gamma[:feedstock_corn_n] * omega * (R_corn_n / marginal_revenue_n)^σ_cet * l_n)
-    @expression(model, q_corn_cs, gamma[:feedstock_corn_cs] * omega * (R_corn_cs / marginal_revenue_cs)^σ_cet * l_cs)
-    @expression(model, q_soy_n, gamma[:feedstock_soy_n] * (1 - omega) * (R_soy_n / marginal_revenue_n)^σ_cet * l_n * soybean_to_oil)
-    @expression(model, q_soy_cs, gamma[:feedstock_soy_cs] * (1 - omega) * (R_soy_cs / marginal_revenue_cs)^σ_cet * l_cs * soybean_to_oil)
+    # feedstock production quantity
+    @expression(model, q_corn_n, gamma[:feedstock_corn_n] * l_corn_n)
+    @expression(model, q_corn_cs, gamma[:feedstock_corn_cs] * l_corn_cs)
+    @expression(model, q_soy_n, gamma[:feedstock_soy_n] * l_soy_n * soybean_to_oil)
+    @expression(model, q_soy_cs, gamma[:feedstock_soy_cs] * l_soy_cs * soybean_to_oil)
 
     # feedstock production (soybeans to soybean oil conversion =10.71lb/bushel)
     #@expression(model, q_corn_n, omega * gamma[:feedstock_corn_n] * l_n)
@@ -517,14 +516,33 @@ function build_unified_model(params, config)
     #    (1 - omega) * gamma[:feedstock_soy_cs] * (p_f[:feedstock_soy_cs] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal)
     #)
 
+    # Marginal revenue: Upstream farmers
+    @expression(model, marginal_revenue_corn_n,
+        gamma[:feedstock_corn_n] * p_f[:feedstock_corn_n])
+
+    @expression(model, marginal_revenue_corn_cs,
+        gamma[:feedstock_corn_cs] * p_f[:feedstock_corn_cs])
+
+    @expression(model, marginal_revenue_soy_n,
+        gamma[:feedstock_soy_n] * (p_f[:feedstock_soy_n] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal))
+
+    @expression(model, marginal_revenue_soy_cs,
+        gamma[:feedstock_soy_cs] * (p_f[:feedstock_soy_cs] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal))
+
     # zero profit condition
     # conventional farmer
     @constraint(model,
-        r_land - marginal_revenue_n ⟂ l_n
+        r_corn - marginal_revenue_corn_n ⟂ l_corn_n
+    )
+    @constraint(model,
+        r_soy - marginal_revenue_soy_n ⟂ l_soy_n
     )
     # climate-smart farmer
     @constraint(model,
-        r_land + kappa - marginal_revenue_cs ⟂ l_cs
+        r_corn + kappa - marginal_revenue_corn_cs ⟂ l_corn_cs
+    )
+    @constraint(model,
+        r_soy + kappa - marginal_revenue_soy_cs ⟂ l_soy_cs
     )
 
     # =====================
@@ -741,9 +759,23 @@ function build_unified_model(params, config)
     # Market Clearing Conditions
     # =====================
     # Land market
-    @constraint(model, L0 * (r_land / r0_land)^ϵ_land -
-                       (l_n + l_cs) ⟂ r_land
-    )
+
+    # r_L CET price index
+    @expression(model, r_land,
+        (omega * r_corn^(1 + σ_cet) + (1 - omega) * r_soy^(1 + σ_cet))^(1 / (1 + σ_cet)))
+
+    # Total land supply: responds to r_land (= r_L)
+    @expression(model, L_total, L0 * (r_land / r0_land)^ϵ_land)
+
+    # l_corn, l_soy supply from CET
+    @expression(model, l_corn_supply, L_total * omega * (r_corn / r_land)^σ_cet)
+    @expression(model, l_soy_supply, L_total * (1 - omega) * (r_soy / r_land)^σ_cet)
+
+    # corn land market clearing
+    @constraint(model, l_corn_supply - (l_corn_n + l_corn_cs) ⟂ r_corn)
+
+    # soy land market clearing
+    @constraint(model, l_soy_supply - (l_soy_n + l_soy_cs) ⟂ r_soy)
 
     # Upstream Feedstock market
     # total conventional feedstock corn demand : Fuel (conventional ATJ SAF, Ethanol) + food - DDGS
@@ -901,8 +933,10 @@ function extract_solution(model, scenario)
     p_f = value.(model[:p_f])
 
     # Extract land use
-    l_n = value(model[:l_n])
-    l_cs = value(model[:l_cs])
+    l_corn_n = value(model[:l_corn_n])
+    l_corn_cs = value(model[:l_corn_cs])
+    l_soy_n = value(model[:l_soy_n])
+    l_soy_cs = value(model[:l_soy_cs])
 
     # Extract feedstock production
     q_corn_n = value(model[:q_corn_n])
@@ -920,6 +954,8 @@ function extract_solution(model, scenario)
         λ_rfs_avi=value(model[:λ_rfs_avi]),
         λ_lcfs=value(model[:λ_lcfs]),
         r_land=value(model[:r_land]),
+        r_corn=value(model[:r_corn]),
+        r_soy=value(model[:r_soy]),
         λ_blendwall_ethanol=value(model[:λ_blendwall_ethanol]),
         λ_blendwall_biodiesel=value(model[:λ_blendwall_biodiesel]),
         λ_nonsoy_capacity=value(model[:λ_nonsoy_capacity])
@@ -931,8 +967,10 @@ function extract_solution(model, scenario)
         x=x,
         p_f=p_f,
         p_c=p_c,
-        l_n=l_n,
-        l_cs=l_cs,
+        l_corn_n=l_corn_n,
+        l_corn_cs=l_corn_cs,
+        l_soy_n=l_soy_n,
+        l_soy_cs=l_soy_cs,
         q_feedstock=(
             corn_n=q_corn_n,
             corn_cs=q_corn_cs,
