@@ -1,4 +1,5 @@
 # extended_grid.jl
+
 cd(@__DIR__)
 println("Working directory: ", pwd())
 
@@ -114,19 +115,15 @@ function run_extended_analysis(params, policy_configs; verbose=true)
     )
 
     for (policy_type, group) in policy_groups
-        prev_sol = policy_type == :taxcredit ? nothing : base_sol
-        #prev_sol = base_sol  # 각 정책 그룹 시작시 statusquo 해로 초기화
         for (name, config) in group
             try
-                model = build_unified_model(params, config; warm_start=prev_sol)
+                model = build_unified_model(params, config; warm_start=base_sol)  # 항상 base_sol
                 optimize!(model)
                 if is_solved_and_feasible(model)
                     sol = extract_solution(model, name)
                     sol = merge(sol, (emissions=calculate_emissions_detail(sol, params),))
                     sol = merge(sol, (implicit_taxes=calculate_implicit_taxes(sol, params, config),))
                     results[name], solutions[name] = model, sol
-                    prev_sol = policy_type == :taxcredit ? nothing : sol
-                    #prev_sol = sol  # 다음 스텝의 warm_start로 사용
                     solved += 1
                 else
                     verbose && println("  ✗ $name: Failed")
@@ -330,6 +327,7 @@ end
 
 display(plot_mac_comparison_simple(results_extended_analysis, mac_extended;
     vlines_abatement=vlines_abatement, y_max=2200.0, y_min=-250.0))
+
 
 # =================================================================================
 # 6. Results DataFrame
