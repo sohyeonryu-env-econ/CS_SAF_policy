@@ -19,7 +19,7 @@ const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-Univers
 # 0. Shared Constants & Helpers
 # =================================================================================
 
-# 4개 정책 공통 메타데이터 (policy_type, xcol, xlabel, title)
+# Common meta info (policy_type, xcol, xlabel, title)
 const POLICIES = [
     (:carbontax, :t, "Carbon Tax (\$/ton CO₂e)", "Carbon Tax"),
     (:rfs, :θ_avi, "RFS Aviation Mandate (θ_avi)", "RFS Aviation"),
@@ -381,8 +381,11 @@ function results_to_dataframe(extended_analysis, policy_configs)
     return df
 end
 
-results_df = results_to_dataframe(results_extended_analysis, EXTENDED_POLICY_MATRIX)
+results_df_CET = results_to_dataframe(results_extended_analysis, EXTENDED_POLICY_MATRIX)
 #@save joinpath(OUTPUT_DIR, "extended_policy_results.jld2") results_df
+using CSV
+csv_path = joinpath(OUTPUT_DIR, "extended_policy_results.csv")
+CSV.write(csv_path, results_df_CET)
 
 # =================================================================================
 # 7. Plot Functions
