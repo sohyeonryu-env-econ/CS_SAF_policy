@@ -1,15 +1,19 @@
 # sigma_sensitivity.jl
+cd(@__DIR__)
+println("Working directory: ", pwd())
 
+include(joinpath(@__DIR__, "SAFModel.jl"))
+include(joinpath(@__DIR__, "analysis.jl"))
 using .SAFModel
 import .SAFModel: params, build_unified_model, extract_solution, is_solved_and_feasible
 using JuMP, PATHSolver, DataFrames, Printf
 
-# RFS mandate = 0.15 고정
+# Fix at RFS mandate = 0.15
 policy_rfs = (
     t=0.0, θ_avi=0.15, σ=0.0, p=0.0, carbon_tax_scope=:aviation
 )
 
-# σ_cet 값 범위
+# σ_cet range
 sigma_values = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
 results = []
@@ -17,7 +21,7 @@ results = []
 for σ_val in sigma_values
     println("\n-- Running σ_cet = $σ_val --")
 
-    # σ_cet만 바꾼 새 params 생성
+    # new params with updated σ_cet
     new_coeff = merge(params.coeff, (σ_cet=σ_val,))
     new_params = merge(params, (coeff=new_coeff,))
 
@@ -68,7 +72,7 @@ println(df)
 ## Plot: SAF quantity by type under RFS with varying σ_cet
 using Plots
 
-# 유효한 결과만 필터
+# filter out only the valid rows (where total_saf is not NaN)
 df_valid = filter(row -> !isnan(row.total_saf), df)
 
 sigma_vals = df_valid.sigma
@@ -77,7 +81,7 @@ hefa_cs_vals = df_valid.saf_hefa_cs
 atj_conv_vals = df_valid.saf_atj_conv
 hefa_conv_vals = df_valid.saf_hefa_conv
 
-# x축 위치 (bar width 맞추기)
+# x axis
 x = 1:length(sigma_vals)
 bar_width = 0.6
 
@@ -130,7 +134,7 @@ p_soy_n = df_valid.p_soy_n
 p_soy_cs = df_valid.p_soy_cs
 
 begin
-    # 왼쪽 축 (corn, $/bushel)
+    # left axis (corn, $/bushel)
     p_left = plot(
         sigma_vals, p_corn_n,
         label="Conv corn (\$/bu)",
@@ -141,7 +145,7 @@ begin
         color=:goldenrod,
         marker=:circle,
         markersize=4,
-        linewidth=0.0,          # 연결선 없음
+        linewidth=0.0,
         legend=false,
         size=(850, 560),
         title="Feedstock prices by σ_cet — RFS (θ_avi = 0.15)",
@@ -157,7 +161,7 @@ begin
     plot!(p_left, sigma_vals, p_corn_cs,
         label="CS corn (\$/bu)",
         color=:goldenrod,
-        marker=:square,       # * 모양
+        marker=:square,
         markersize=4,
         linewidth=0.0,
         legend=false)
@@ -183,7 +187,7 @@ begin
         linewidth=0.0,
         legend=false)
 
-    # conv-cs 수직 연결선 추가 (p_left 에 corn, p_right 에 soy)
+    # conv-cs vertical lines
     for i in 1:length(sigma_vals)
         plot!(p_left, [sigma_vals[i], sigma_vals[i]], [p_corn_n[i], p_corn_cs[i]],
             color=:goldenrod, linewidth=1, alpha=0.5, label=false)
@@ -200,7 +204,7 @@ begin
     plot!(p_legend, [NaN], [NaN], label="Conv soy", color=:forestgreen, marker=:circle, markersize=4, linewidth=0, markerstrokewidth=0.5)
     plot!(p_legend, [NaN], [NaN], label="CS soy", color=:forestgreen, marker=:square, markersize=4, linewidth=0, markerstrokewidth=0.5)
 
-    # 메인 그래프 + legend 패널 수직 결합
+    # put together  
     p_final = plot(p_left, p_legend, layout=grid(2, 1, heights=[0.85, 0.15]), size=(850, 580))
 
 end

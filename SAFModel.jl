@@ -242,7 +242,7 @@ supply = (
 
 # land corn ratio
 ω = 0.54
-σ_cet = 0.0 # elasticity of transformation between corn and soybeans
+σ_cet = 0.01 # elasticity of transformation between corn and soybeans
 
 # κ: fixed costs of climate-smart practice adoption
 κ = 19.0  # $ per acre
@@ -388,10 +388,10 @@ function build_unified_model(params, config; warm_start=nothing)
         q[g in FUEL_GOODS] >= 0 # supply quantities
         p_f[f in FEEDSTOCK_GOODS] >= 0 # feedstock price
         p_c[s in [:avi, :gas, :die, :soymeal]] >= 0 # consumer's price on x
-        l_n >= 0      # conventional farmer 총 토지
-        l_cs >= 0     # climate-smart farmer 총 토지
-        r_corn >= 500   # corn 토지 임대료
-        r_soy >= 500    # soy 토지 임대료
+        l_n >= 0      # conventional farmer land
+        l_cs >= 0     # climate-smart farmer land
+        r_corn >= 500   # corn land rent
+        r_soy >= 500    # soy land rent
 
     end
 
@@ -412,24 +412,24 @@ function build_unified_model(params, config; warm_start=nothing)
     end
 
     # I need initial values for the non linear solver to converge. (CET)
-    #if !isnothing(warm_start)
-    #    set_start_value(l_n, warm_start.l_n)
-    #    set_start_value(l_cs, warm_start.l_cs)
-    #    set_start_value(r_corn, warm_start.duals.r_corn)
-    #    set_start_value(r_soy, warm_start.duals.r_soy)
-    #    for g in FUEL_GOODS
-    #        set_start_value(q[g], warm_start.q[g])
-    #    end
-    #    for s in SECTORS
-    #        set_start_value(x[s], warm_start.x[s])
-    #    end
-    #    for f in FEEDSTOCK_GOODS
-    #        set_start_value(p_f[f], warm_start.p_f[f])
-    #    end
-    #    for s in [:avi, :gas, :die, :soymeal]
-    #        set_start_value(p_c[s], warm_start.p_c[s])
-    #    end
-    #end
+    if !isnothing(warm_start)
+        set_start_value(l_n, warm_start.l_n)
+        set_start_value(l_cs, warm_start.l_cs)
+        set_start_value(r_corn, warm_start.duals.r_corn)
+        set_start_value(r_soy, warm_start.duals.r_soy)
+        for g in FUEL_GOODS
+            set_start_value(q[g], warm_start.q[g])
+        end
+        for s in SECTORS
+            set_start_value(x[s], warm_start.x[s])
+        end
+        for f in FEEDSTOCK_GOODS
+            set_start_value(p_f[f], warm_start.p_f[f])
+        end
+        for s in [:avi, :gas, :die, :soymeal]
+            set_start_value(p_c[s], warm_start.p_c[s])
+        end
+    end
 
     # =====================
     # Consumer's utility max
@@ -496,7 +496,7 @@ function build_unified_model(params, config; warm_start=nothing)
     @expression(model, L_total, L0 * (r_land / r0_land)^ϵ_land)
 
     # CET land supply by crop
-    # σ_cet = 0 이면 l_corn_supply = L_total * omega, l_soy_supply = L_total * (1-omega) 로 고정
+    # If σ_cet = 0,  l_corn_supply = L_total * omega, l_soy_supply = L_total * (1-omega) 
     @expression(model, l_corn_supply, L_total * omega * (r_corn / r_land)^σ_cet)
     @expression(model, l_soy_supply, L_total * (1 - omega) * (r_soy / r_land)^σ_cet)
 
@@ -505,7 +505,7 @@ function build_unified_model(params, config; warm_start=nothing)
     # Upstream farmers
     # =====================
 
-    # 같은 농부가 corn/soy를 land owner CET 배분 비율로 동시에 경작
+    # one farmer grows corn/soy simultaneously according to the land owner's CET allocation ratio
     @expression(model, l_corn_n, l_n * (l_corn_supply / L_total))
     @expression(model, l_corn_cs, l_cs * (l_corn_supply / L_total))
     @expression(model, l_soy_n, l_n * (l_soy_supply / L_total))
