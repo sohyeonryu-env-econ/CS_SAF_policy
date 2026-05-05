@@ -224,10 +224,10 @@ function make_land_table(solutions, params; scenarios=nothing)
         Grand_Total=Float64[], Land_Rent=Float64[])
     for s in scenario_list
         sol = solutions[s]
-        l_n_total = sol.l_corn_n + sol.l_soy_n
-        l_cs_total = sol.l_corn_cs + sol.l_soy_cs
-        push!(df, (String(s), 1000sol.l_corn_n, 1000sol.l_corn_cs, 1000(sol.l_corn_n + sol.l_corn_cs),
-            1000sol.l_soy_n, 1000sol.l_soy_cs, 1000(sol.l_soy_n + sol.l_soy_cs),
+        l_n_total = sol.l_n_corn + sol.l_n_soy
+        l_cs_total = sol.l_cs_corn + sol.l_cs_soy
+        push!(df, (String(s), 1000sol.l_n_corn, 1000sol.l_cs_corn, 1000(sol.l_n_corn + sol.l_cs_corn),
+            1000sol.l_n_soy, 1000sol.l_cs_soy, 1000(sol.l_n_soy + sol.l_cs_soy),
             1000l_n_total, 1000l_cs_total, 1000(l_n_total + l_cs_total),
             sol.duals.r_land))
     end
@@ -344,13 +344,13 @@ function calculate_ps_land_changes(solutions, solution_sq, params; scenarios=not
     r0 = params.supply.land.r0_land
     ε = params.supply.land.ϵ_land
     r_sq = solution_sq.duals.r_land
-    L_sq = solution_sq.l_corn_n + solution_sq.l_soy_n + solution_sq.l_corn_cs + solution_sq.l_soy_cs
-
+    L_sq = solution_sq.l_n_corn + solution_sq.l_n_soy +
+           solution_sq.l_cs_corn + solution_sq.l_cs_soy
     ps_land_changes = Dict()
     for s in scenario_list
         sol = solutions[s]
         r_pol = sol.duals.r_land
-        L_pol = sol.l_corn_n + sol.l_soy_n + sol.l_corn_cs + sol.l_soy_cs
+        L_pol = sol.l_n_corn + sol.l_n_soy + sol.l_cs_corn + sol.l_cs_soy
         integral = r0 * (L0^(-1 / ε)) * (ε / (ε + 1)) *
                    (L_pol^((ε + 1) / ε) - L_sq^((ε + 1) / ε))
         ps_land_changes[s] = (

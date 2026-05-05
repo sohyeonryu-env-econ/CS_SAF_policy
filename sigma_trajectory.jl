@@ -52,13 +52,13 @@ for σ_val in sigma_values
         r_land_val = sol.duals.r_land
 
         # l_corn, l_soy: CET에서는 expression으로 존재
-        l_corn_n_val = σ_val > 0 ? value(model[:l_corn_n]) : sol.l_n * 0.54
-        l_corn_cs_val = σ_val > 0 ? value(model[:l_corn_cs]) : sol.l_cs * 0.54
-        l_soy_n_val = σ_val > 0 ? value(model[:l_soy_n]) : sol.l_n * 0.46
-        l_soy_cs_val = σ_val > 0 ? value(model[:l_soy_cs]) : sol.l_cs * 0.46
+        l_n_corn_val = σ_val > 0 ? value(model[:l_n_corn]) : sol.l_n * 0.54
+        l_cs_corn_val = σ_val > 0 ? value(model[:l_cs_corn]) : sol.l_cs * 0.54
+        l_n_soy_val = σ_val > 0 ? value(model[:l_n_soy]) : sol.l_n * 0.46
+        l_cs_soy_val = σ_val > 0 ? value(model[:l_cs_soy]) : sol.l_cs * 0.46
 
-        l_corn_total = l_corn_n_val + l_corn_cs_val
-        l_soy_total = l_soy_n_val + l_soy_cs_val
+        l_corn_total = l_n_corn_val + l_cs_corn_val
+        l_soy_total = l_n_soy_val + l_cs_soy_val
         l_total = sol.l_n + sol.l_cs
 
         # 실제 share 계산
