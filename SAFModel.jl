@@ -413,25 +413,29 @@ function build_unified_model(params, config; warm_start=nothing)
         set_name(q[g], meta[:process_labels][g])
     end
 
-    # I need initial values for the non linear solver to converge. (CET)
-    #if !isnothing(warm_start)
-    #    set_start_value(l_n, warm_start.l_n)
-    #    set_start_value(l_cs, warm_start.l_cs)
-    #    set_start_value(r_corn, warm_start.duals.r_corn)
-    #    set_start_value(r_soy, warm_start.duals.r_soy)
-    #    for g in FUEL_GOODS
-    #        set_start_value(q[g], warm_start.q[g])
+    # initial value
+    #    if !isnothing(warm_start)
+    #       omega = params.coeff.omega
+    #        set_start_value(model[:l_n_corn], warm_start.l_n * omega)
+    #        set_start_value(model[:l_n_soy], warm_start.l_n * (1 - omega))
+    #        set_start_value(model[:l_cs_corn], warm_start.l_cs * omega)
+    #        set_start_value(model[:l_cs_soy], warm_start.l_cs * (1 - omega))
+    #        set_start_value(model[:r_corn], warm_start.duals.r_land)
+    #        set_start_value(model[:r_soy], warm_start.duals.r_land)
+    #        for g in FUEL_GOODS
+    #            set_start_value(model[:q][g], warm_start.q[g])
+    #        end
+    #        for s in SECTORS
+    #            set_start_value(model[:x][s], warm_start.x[s])
+    #        end
+    #        for f in FEEDSTOCK_GOODS
+    #            set_start_value(model[:p_f][f], warm_start.p_f[f])
+    #        end
+    #        for s in [:avi, :gas, :die, :soymeal]
+    #            set_start_value(model[:p_c][s], warm_start.p_c[s])
+    #        end
     #    end
-    #    for s in SECTORS
-    #        set_start_value(x[s], warm_start.x[s])
-    #    end
-    #    for f in FEEDSTOCK_GOODS
-    #        set_start_value(p_f[f], warm_start.p_f[f])
-    #    end
-    #    for s in [:avi, :gas, :die, :soymeal]
-    #        set_start_value(p_c[s], warm_start.p_c[s])
-    #    end
-    #end
+
 
     # =====================
     # Consumer's utility max
