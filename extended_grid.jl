@@ -1219,3 +1219,5 @@ sort!(carbontax_df, :t)
 
 # 처음 20개 행 확인
 first(carbontax_df[!, [:t, :q_saf_atj_conv, :q_saf_atj_cs, :q_saf_hefa_nonsoy]], 20)
+
+

@@ -626,3 +626,266 @@ println("  Rows: $(nrow(df)), Columns: $(ncol(df))")
 println("="^80)
 println("\nFirst 20 rows:")
 show(first(df, 20), allrows=true, allcols=false)
+
+# =================================================================================
+# 19. Figure: SAF composition by policy (Without vs With CI threshold)
+# =================================================================================
+# Append this block to the end of extract_results.jl.
+# Reuses `df` and `OUTPUT_DIR` defined earlier in that script.
+#
+# Left panel  = Case1 (df columns prefixed CS_noCIthreshold) = "Without threshold"
+# Right panel = Case2 (df columns prefixed CS_CIthreshold)   = "With threshold"
+# Each policy (RFS, LCFS, IRA) is one horizontal stacked bar over SAF pathways,
+# with the SAF total printed at the end of the bar. A GHG-reduction subtitle
+# (from Target_Reduction_BtonCO2e) is shown under each panel title.
+
+#using Pkg
+#Pkg.add("CairoMakie")
+using CairoMakie
+
+# --- 19.1 Pathways, colors, policies, panels ---------------------------------
+
+# Stacking order, left to right. Colors match fuel_info. saf_hefa_conv is kept
+# for completeness; it contributes only if a run produces nonzero values.
+saf_components = [
+    (:saf_atj_conv, "Conv ATJ-SAF", :blue),
+    (:saf_atj_cs, "CS ATJ-SAF", :red),
+    (:saf_hefa_conv, "Conv HEFA-SAF", :green),
+    (:saf_hefa_cs, "CS HEFA-SAF", :orange),
+    (:saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple),
+]
+
+# (df policy key, display label), top to bottom. IRA == tax credit column.
+panel_policies = [
+    ("RFS", "RFS"),
+    ("LCFS", "LCFS"),
+    ("TaxCredit", "IRA"),
+]
+
+# (display title, df column prefix)
+panels = [
+    ("Without threshold", "CS_noCIthreshold"),  # Case1
+    ("With threshold", "CS_CIthreshold"),     # Case2
+]
+
+# Look up one cell in df by Category + Variable + column name; missing -> 0.0
+function get_df_value(category::String, variable::String, colname::String)
+    rows = findall((df.Category .== category) .& (df.Variable .== variable))
+    isempty(rows) && return 0.0
+    col = Symbol(colname)
+    col in propertynames(df) || return 0.0
+    v = df[rows[1], col]
+    (ismissing(v) || !(v isa Number)) ? 0.0 : float(v)
+end
+
+# Target reduction for a case: read from any policy column in that case (RFS used)
+# case 컬럼 prefix -> all_case_results 키
+const CASE_SYMBOL = Dict(
+    "CS_noCIthreshold" => :case1,   # Without threshold
+    "CS_CIthreshold" => :case2,   # With threshold
+)
+
+# 원본 target_reduction을 M ton CO2e로 (B ton * 1000), 라운딩 없음
+function target_reduction_mt(case_prefix::String)
+    all_case_results[CASE_SYMBOL[case_prefix]].target_reduction * 1000
+end
+
+# --- 19.2 Figure -------------------------------------------------------------
+
+begin
+    xmax = 3.0
+    bar_h = 0.55
+    npol = length(panel_policies)
+
+    fig = Figure(size=(1000, 440), fontsize=13)
+
+    for (pi, (ptitle, case_prefix)) in enumerate(panels)
+        red = target_reduction_mt(case_prefix)
+        subtitle = string("(GHG reduction ", round(red, digits=2), " M tonCO2e)")
+        ypos = collect(npol:-1:1)  # RFS at top
+        ax = Axis(fig[1, pi];
+            title=ptitle,
+            subtitle=subtitle,
+            titlesize=15,
+            subtitlesize=12,
+            xlabel="SAF production (B gal)",
+            xticks=0:0.5:3.0,
+            yticks=(ypos, [p[2] for p in panel_policies]),
+            ygridvisible=false,
+            topspinevisible=false,
+            rightspinevisible=false,
+            limits=((0, xmax + 0.45), (0.4, npol + 0.6)),
+        )
+
+        for (j, (pol_key, _)) in enumerate(panel_policies)
+            y = npol - j + 1
+            colname = "$(case_prefix)_$(pol_key)"
+            left = 0.0
+            for (comp_sym, _, comp_col) in saf_components
+                v = get_df_value("Production", string(comp_sym), colname)
+                if v > 0
+                    poly!(ax,
+                        Rect2f(left, y - bar_h / 2, v, bar_h);
+                        color=comp_col,
+                        strokecolor=:white,
+                        strokewidth=1.0,
+                    )
+                    left += v
+                end
+            end
+            if left > 0
+                text!(ax, left + 0.05, y;
+                    text=string(round(left, digits=2), "B"),
+                    align=(:left, :center),
+                    fontsize=12,
+                )
+            end
+        end
+    end
+
+    # --- 19.3 Shared legend ------------------------------------------------------
+
+    legend_elems = [PolyElement(color=c, strokecolor=:white)
+                    for (_, _, c) in saf_components]
+    legend_labels = [lab for (_, lab, _) in saf_components]
+    Legend(fig[2, 1:2], legend_elems, legend_labels;
+        orientation=:horizontal,
+        framevisible=false,
+        nbanks=1,
+    )
+    rowsize!(fig.layout, 2, Auto(0.12))
+end
+
+fig
+
+# --- 19.4 Save ---------------------------------------------------------------
+
+fig_file_png = joinpath(OUTPUT_DIR, "50CI_threshold.png")
+save(fig_file_png, fig; px_per_unit=3)
+
+println("\n" * "="^80)
+println("Figure saved:")
+println("  ", fig_file_png)
+# println("  ", fig_file_pdf)
+println("="^80)
+
+# make_validation_table.jl
+# results_comprehensive.csv를 읽어 model validation LaTeX 표를 생성한다.
+# CSV만 있으면 단독 실행 가능.
+#
+# 매핑:
+#   Consumption  -> Production 카테고리
+#   Corn/Soyoil for food -> Demand 카테고리
+#   연료 가격($/gallon) -> Price_consumer($/mile) * r(* β for ethanol)
+#   Corn/Soy 가격 -> Price 카테고리 feedstock_corn_n / feedstock_soy_n
+#   Land -> CSV에서 계산하지 않고 기존 표값 유지 (export 차감 반영값)
+
+using CSV, DataFrames, Printf
+
+const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
+const CSV_PATH = joinpath(OUTPUT_DIR, "results_comprehensive.csv")
+const TEX_OUT = joinpath(OUTPUT_DIR, "validation_table.tex")
+
+# 환산 계수 (SAFModel과 동일)
+const R_JET = 58.95847369
+const R_GAS = 21.10983193
+const R_DIE = 7.256737051
+const B_ETH = 0.681920857
+
+# CSV 컬럼명
+const COL_OBS = "Observed"
+const COL_SQ = "StatusQuo"
+
+# Land 행: 기존 표값 그대로 유지 (obs, statusquo)
+const LAND_CORN = (70.15, 67.08)
+const LAND_SOY = (50.15, 53.47)
+
+df = CSV.read(CSV_PATH, DataFrame)
+
+# (Category, Variable)로 한 셀 읽기. 없거나 missing이면 NaN.
+function cell(category::AbstractString, variable::AbstractString, col::AbstractString)
+    rows = findall((string.(df.Category) .== category) .& (string.(df.Variable) .== variable))
+    isempty(rows) && return NaN
+    Symbol(col) in propertynames(df) || return NaN
+    v = df[rows[1], Symbol(col)]
+    (ismissing(v) || !(v isa Number)) ? NaN : float(v)
+end
+
+prod(g, col) = cell("Production", g, col)
+demand(g, col) = cell("Demand", g, col)
+pricef(g, col) = cell("Price", g, col)
+pc(g, col) = cell("Price_consumer", g, col)   # $/mile
+
+# 연료 $/gallon 환산
+jet_pg(col) = R_JET * pc("avi", col)
+gas_pg(col) = R_GAS * pc("gas", col)
+eth_pg(col) = R_GAS * B_ETH * pc("gas", col)
+die_pg(col) = R_DIE * pc("die", col)
+
+# 표 구성: (라벨, obs함수, sq함수, 소수자리). 섹션 헤더는 :header.
+# land 두 행은 상수 튜플을 그대로 반환.
+rows = [
+    (:header, "Consumption (billion gallons)"),
+    ("Jet Fuel", () -> prod("jet_fuel", COL_OBS), () -> prod("jet_fuel", COL_SQ), 2),
+    ("Gasoline", () -> prod("gasoline", COL_OBS), () -> prod("gasoline", COL_SQ), 2),
+    ("Ethanol", () -> prod("ethanol", COL_OBS), () -> prod("ethanol", COL_SQ), 2),
+    ("Diesel", () -> prod("diesel", COL_OBS), () -> prod("diesel", COL_SQ), 2),
+    ("Corn for food (billion bushels)", () -> demand("corn", COL_OBS), () -> demand("corn", COL_SQ), 2),
+    ("Soybean oil for food (billion lbs)", () -> demand("soyoil", COL_OBS), () -> demand("soyoil", COL_SQ), 2),
+    (:header, "Price (\\\$/gallon)"),
+    ("Jet", () -> jet_pg(COL_OBS), () -> jet_pg(COL_SQ), 2),
+    ("Gasoline", () -> gas_pg(COL_OBS), () -> gas_pg(COL_SQ), 2),
+    ("Ethanol", () -> eth_pg(COL_OBS), () -> eth_pg(COL_SQ), 2),
+    ("Diesel", () -> die_pg(COL_OBS), () -> die_pg(COL_SQ), 2),
+    ("Corn for food (\\\$/bushel)", () -> pricef("feedstock_corn_n", COL_OBS), () -> pricef("feedstock_corn_n", COL_SQ), 2),
+    ("Soybean oil for food (\\\$/lb)", () -> pricef("feedstock_soy_n", COL_OBS), () -> pricef("feedstock_soy_n", COL_SQ), 2),
+    (:header, "Land use\\tnote{1} (million acres)"),
+    ("Land used for corn", () -> LAND_CORN[1], () -> LAND_CORN[2], 2),
+    ("Land used for soybean", () -> LAND_SOY[1], () -> LAND_SOY[2], 2),
+]
+
+fmt(x, d) = isnan(x) ? "" : (d == 1 ? @sprintf("%.1f", x) :
+             d == 2 ? @sprintf("%.2f", x) : @sprintf("%.0f", x))
+
+function diffpct(obs, sq)
+    (isnan(obs) || isnan(sq) || abs(obs) < 1e-12) && return ""
+    @sprintf("%.1f", (sq - obs) / obs * 100)
+end
+
+io = IOBuffer()
+println(io, "\\begin{table}[h]")
+println(io, "\\centering")
+println(io, "\\caption{Model validation with observed data in 2024}")
+println(io, "\\begin{adjustbox}{max width=\\textwidth}")
+println(io, "\\begin{threeparttable}")
+println(io, "\\begin{tabular}{lccc}")
+println(io, "\\toprule")
+println(io, "\\textbf{Variable} & \\textbf{Observed 2024} & \\textbf{Status Quo (No policy)} & \\textbf{Difference (\\%)} \\\\")
+println(io, "\\midrule")
+
+for row in rows
+    if row[1] === :header
+        println(io, "\\textbf{$(row[2])} & & & \\\\")
+    else
+        label, fobs, fsq, d = row
+        ov = fobs()
+        sv = fsq()
+        println(io, "$(label) & $(fmt(ov, d)) & $(fmt(sv, d)) & $(diffpct(ov, sv)) \\\\")
+    end
+end
+
+println(io, "\\bottomrule")
+println(io, "\\end{tabular}")
+println(io, "\\begin{tablenotes}")
+println(io, "\\footnotesize")
+println(io, "\\item[1] US corn and soybean cropland that were harvested in 2024 total 82.9 and 86.1 million acres (USDA 2025a). Excluding 12.75 and 35.95 million acres used for crop production for exports, which are not included in this study, this yields 70.15 and 50.15 million acres allocated to biofuel production and food.")
+println(io, "\\end{tablenotes}")
+println(io, "\\end{threeparttable}")
+println(io, "\\end{adjustbox}")
+println(io, "\\end{table}")
+
+tex = String(take!(io))
+write(TEX_OUT, tex)
+println("✓ LaTeX table written to: ", TEX_OUT)
+println("\n", "="^70, "\n")
+println(tex)

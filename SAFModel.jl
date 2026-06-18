@@ -1,3 +1,4 @@
+# CI threshold testing
 module SAFModel
 
 using JuMP, PATHSolver
@@ -22,7 +23,6 @@ const GOODS = [
     :feedstock_corn_cs, # "feedstock: climate-smart corn"
     :feedstock_soy_n, #"feedstock: conventional soy"
     :feedstock_soy_cs, # "feedstock: climate-smart soy"
-    :feedstock_nonsoy, # "feedstock: non-soy"
     # downstream fuel and food
     :jet_fuel, # "Jet fuel"
     :saf_atj_conv, # "Conventional ATJ-SAF"
@@ -61,9 +61,9 @@ const SECTORS = [
     :soymeal
 ]
 
-const FEEDSTOCK_GOODS = GOODS[1:5] # all feedstock goods
-const FUEL_GOODS = GOODS[6:18]  # all fuel goods
-const FOOD_GOODS = GOODS[19:20]  # all food goods
+const FEEDSTOCK_GOODS = GOODS[1:4] # all feedstock goods
+const FUEL_GOODS = GOODS[5:17]  # all fuel goods
+const FOOD_GOODS = GOODS[18:19]  # all food goods
 
 # =====================
 # parameters
@@ -81,7 +81,7 @@ const FOOD_GOODS = GOODS[19:20]  # all food goods
 γ_vec = [
     188.8, 171.6, 53.6, 48.7
 ]
-γ = Dict(g => v for (g, v) in zip(FEEDSTOCK_GOODS[1:4], γ_vec))
+γ = Dict(g => v for (g, v) in zip(FEEDSTOCK_GOODS, γ_vec))
 
 # r: energy conversion rate
 r = Dict(
@@ -234,23 +234,11 @@ land_supply = (
     r0_land=587.71, # baseline land rent
     ϵ_land=0.1  # land supply elasticity
 )
-# non soy feedstock supply functions: supply = ns0*(p/p0)^ϵ
-nonsoy_supply = (
-    ns0=20.72, #28.97, 21은 sq의 rd, bd에 알파곱해서 나온 값, 28은 통계에서 나온 값. 21하면 잘 돌아가는데 28하면 결과가 막 튐.
-    p0_ns=0.28,
-    ϵ_ns=0.1
-)
-#nonsoy_supply = (
-#    ns0=30, #21.16, #30,
-#    p0_ns=0.49, #0.244, #0.49,
-#    ϵ_ns=0.3
-#)
 
 supply = (
     fuel=fuel_cost,
     #feedstock=feedstock_cost,
-    land=land_supply,
-    nonsoy=nonsoy_supply
+    land=land_supply
 )
 
 # land corn ratio
@@ -279,7 +267,7 @@ coeff = (
     meal_per_oil=meal_per_oil,
     delta_mj=δ_mj,
     baselineCI=baselineCI,
-    #nonsoy_feedstock_price=nonsoy_feedstock_price,
+    nonsoy_feedstock_price=nonsoy_feedstock_price,
     hefa_saf_premium=hefa_saf_premium
 )
 
@@ -299,7 +287,6 @@ meta = Dict(
         :feedstock_corn_cs => "Feedstock: Climate-smart corn",
         :feedstock_soy_n => "Feedstock: Conventional soy",
         :feedstock_soy_cs => "Feedstock: Climate-smart soy",
-        :feedstock_nonsoy => "Feedstock: Non-soy",
         :jet_fuel => "Jet fuel",
         :saf_atj_conv => "Conventional ATJ-SAF",
         :saf_atj_cs => "Climate-smart ATJ-SAF",
@@ -374,18 +361,14 @@ function build_unified_model(params, config)
     kappa = coeff.kappa
     delta_mj = coeff.delta_mj
     baselineCI = coeff.baselineCI
-    #nonsoy_feedstock_price = coeff.nonsoy_feedstock_price
+    nonsoy_feedstock_price = coeff.nonsoy_feedstock_price
     hefa_saf_premium = coeff.hefa_saf_premium
     L0 = land_supply.L0
     r0_land = land_supply.r0_land
     ϵ_land = land_supply.ϵ_land
-    ns0 = supply.nonsoy.ns0
-    p0_ns = supply.nonsoy.p0_ns
-    ϵ_ns = supply.nonsoy.ϵ_ns
-
 
     # Product groups    
-    FEEDSTOCK_GOODS = [:feedstock_corn_n, :feedstock_corn_cs, :feedstock_soy_n, :feedstock_soy_cs, :feedstock_nonsoy]
+    FEEDSTOCK_GOODS = [:feedstock_corn_n, :feedstock_corn_cs, :feedstock_soy_n, :feedstock_soy_cs]
     SAF_GOODS = [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
     BIODIESEL_GOODS = [:biodiesel_soy, :biodiesel_nonsoy]
     RD_GOODS = [:rd_soy, :rd_nonsoy]
@@ -401,19 +384,18 @@ function build_unified_model(params, config)
     @variables model begin
         x[s in SECTORS] >= 0.1 # demand quantities
         q[g in FUEL_GOODS] >= 0 # supply quantities
-        p_f[f in FEEDSTOCK_GOODS] >= 0.001 # feedstock price
+        p_f[f in FEEDSTOCK_GOODS] >= 0 # feedstock price
         p_c[s in [:avi, :gas, :die, :soymeal]] >= 0 # consumer's price on x
         l_n >= 0 # conventional land use
         l_cs >= 0 # climate-smart land use
 
     end
-    set_start_value(p_f[:feedstock_nonsoy], p0_ns)
 
     # Base dual variables 
     @variable(model, λ_rfs >= 0)
     @variable(model, λ_blendwall_ethanol >= 0)
     @variable(model, λ_blendwall_biodiesel >= 0)
-    #@variable(model, λ_nonsoy_capacity >= 0)
+    @variable(model, λ_nonsoy_capacity >= 0)
 
     # Policy-specific dual variables 
     @variable(model, λ_rfs_avi >= 0)      # RFS aviation
@@ -571,11 +553,11 @@ function build_unified_model(params, config)
         ) +
 
         # 4. Non-soy capacity
-        #λ_nonsoy_capacity * (
-        #    (g == :saf_hefa_nonsoy) ? alpha[:saf_hefa_nonsoy] :
-        #    (g == :biodiesel_nonsoy) ? alpha[:biodiesel_nonsoy] :
-        #    (g == :rd_nonsoy) ? alpha[:rd_nonsoy] : 0.0
-        #) +
+        λ_nonsoy_capacity * (
+            (g == :saf_hefa_nonsoy) ? alpha[:saf_hefa_nonsoy] :
+            (g == :biodiesel_nonsoy) ? alpha[:biodiesel_nonsoy] :
+            (g == :rd_nonsoy) ? alpha[:rd_nonsoy] : 0.0
+        ) +
 
         # Policy-specific adjustments (aviation fuels only)
         # 1. Carbon tax
@@ -666,7 +648,7 @@ function build_unified_model(params, config)
     # Non-soy HEFA SAF producers
     @constraint(model,
         process_mc_hefa +
-        alpha[:saf_hefa_nonsoy] * p_f[:feedstock_nonsoy] +
+        alpha[:saf_hefa_nonsoy] * nonsoy_feedstock_price +
         policy_adjustment[:saf_hefa_nonsoy] -
         price_per_unit[:saf_hefa_nonsoy]
         ⟂
@@ -697,7 +679,7 @@ function build_unified_model(params, config)
     # Non Soy biodiesel producers
     @constraint(model,
         process_mc_biodiesel +
-        alpha[:biodiesel_nonsoy] * p_f[:feedstock_nonsoy] +
+        alpha[:biodiesel_nonsoy] * nonsoy_feedstock_price +
         policy_adjustment[:biodiesel_nonsoy] -
         price_per_unit[:biodiesel_nonsoy]
         ⟂
@@ -716,7 +698,7 @@ function build_unified_model(params, config)
     # Non Soy Renewable diesel producers
     @constraint(model,
         process_mc_hefa - hefa_saf_premium +
-        alpha[:rd_nonsoy] * p_f[:feedstock_nonsoy] +
+        alpha[:rd_nonsoy] * nonsoy_feedstock_price +
         policy_adjustment[:rd_nonsoy] -
         price_per_unit[:rd_nonsoy]
         ⟂
@@ -741,12 +723,6 @@ function build_unified_model(params, config)
     @constraint(model, L0 * (r_land / r0_land)^ϵ_land -
                        (l_n + l_cs) ⟂ r_land
     )
-
-    # non soy feedstock market
-    @expression(model, total_nonsoy_demand,
-        sum(alpha[g] * q[g] for g in [:saf_hefa_nonsoy, :biodiesel_nonsoy, :rd_nonsoy])
-    )
-    @constraint(model, ns0 * (p_f[:feedstock_nonsoy] / p0_ns)^ϵ_ns - total_nonsoy_demand ⟂ p_f[:feedstock_nonsoy])
 
     # Upstream Feedstock market
     # total conventional feedstock corn demand : Fuel (conventional ATJ SAF, Ethanol) + food - DDGS
@@ -836,12 +812,12 @@ function build_unified_model(params, config)
     )
 
     # Non-soy capacity (always active)
-    #@constraint(model,
-    #    30 - (alpha[:biodiesel_nonsoy] * q[:biodiesel_nonsoy] + alpha[:rd_nonsoy] * q[:rd_nonsoy] +
-    #          alpha[:saf_hefa_nonsoy] * q[:saf_hefa_nonsoy])
-    #    ⟂
-    #    λ_nonsoy_capacity
-    #)
+    @constraint(model,
+        30 - (alpha[:biodiesel_nonsoy] * q[:biodiesel_nonsoy] + alpha[:rd_nonsoy] * q[:rd_nonsoy] +
+              alpha[:saf_hefa_nonsoy] * q[:saf_hefa_nonsoy])
+        ⟂
+        λ_nonsoy_capacity
+    )
 
     # RFS aviation (controlled by θ_avi)
     @constraint(model,
@@ -878,17 +854,6 @@ end
 # =====================
 
 function run_scenario(scenario::Symbol, params, policy_configs)
-
-    # Get policy parameters
-    #t, θ_avi, σ, p = policy_matrix[scenario]
-
-    # Build config
-    #config = (
-    #    t=t,
-    #    θ_avi=θ_avi,
-    #    σ=σ,
-    #    p=p
-    #)
     config = getproperty(policy_configs, scenario)
 
     # Build and solve
@@ -929,7 +894,6 @@ function extract_solution(model, scenario)
     q_corn_cs = value(model[:q_corn_cs])
     q_soy_n = value(model[:q_soy_n])
     q_soy_cs = value(model[:q_soy_cs])
-    q_nonsoy = value(model[:total_nonsoy_demand])
 
     # Calculate derived quantities
     ddgs = 0.092 * q[:ethanol] + 0.159 * (q[:saf_atj_conv] + q[:saf_atj_cs])
@@ -943,7 +907,7 @@ function extract_solution(model, scenario)
         r_land=value(model[:r_land]),
         λ_blendwall_ethanol=value(model[:λ_blendwall_ethanol]),
         λ_blendwall_biodiesel=value(model[:λ_blendwall_biodiesel]),
-        #λ_nonsoy_capacity=value(model[:λ_nonsoy_capacity])
+        λ_nonsoy_capacity=value(model[:λ_nonsoy_capacity])
     )
 
     return (
@@ -958,8 +922,7 @@ function extract_solution(model, scenario)
             corn_n=q_corn_n,
             corn_cs=q_corn_cs,
             soy_n=q_soy_n,
-            soy_cs=q_soy_cs,
-            nonsoy=q_nonsoy
+            soy_cs=q_soy_cs
         ),
         duals=duals,
         ddgs=ddgs,

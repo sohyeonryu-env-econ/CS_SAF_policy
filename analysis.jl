@@ -165,8 +165,8 @@ function make_production_table(solutions, params; scenarios=nothing)
         end
     end
 
-    feedstock_goods = [:feedstock_corn_n, :feedstock_corn_cs, :feedstock_soy_n, :feedstock_soy_cs, :feedstock_nonsoy]
-    feedstock_keys = [:corn_n, :corn_cs, :soy_n, :soy_cs, :nonsoy]
+    feedstock_goods = [:feedstock_corn_n, :feedstock_corn_cs, :feedstock_soy_n, :feedstock_soy_cs]
+    feedstock_keys = [:corn_n, :corn_cs, :soy_n, :soy_cs]
     for (g, key) in zip(feedstock_goods, feedstock_keys)
         push!(df.Product, labels[g])
         for s in scenario_list
@@ -204,13 +204,13 @@ function make_price_table(solutions; scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(solutions)) : scenarios
     df = DataFrame(Scenario=String[], Aviation=Float64[], Gasoline=Float64[],
         Diesel=Float64[], ConvCorn=Float64[], CSCorn=Float64[],
-        ConvSoy=Float64[], CSSoy=Float64[], Soymeal=Float64[], NonSoyFeedstock=Float64[])
+        ConvSoy=Float64[], CSSoy=Float64[], Soymeal=Float64[])
     for s in scenario_list
         sol = solutions[s]
         push!(df, (String(s), sol.p_c[:avi], sol.p_c[:gas], sol.p_c[:die],
             sol.p_f[:feedstock_corn_n], sol.p_f[:feedstock_corn_cs],
             sol.p_f[:feedstock_soy_n], sol.p_f[:feedstock_soy_cs],
-            sol.p_c[:soymeal], sol.p_f[:feedstock_nonsoy]))
+            sol.p_c[:soymeal]))
     end
     return df
 end
@@ -260,12 +260,12 @@ function make_duals_table(solutions; scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(solutions)) : scenarios
     df = DataFrame(Scenario=String[], λ_rfs=Float64[], λ_rfs_avi=Float64[],
         λ_lcfs=Float64[], r_land=Float64[], λ_blendwall_ethanol=Float64[],
-        λ_blendwall_biodiesel=Float64[] #λ_nonsoy_capacity=Float64[]
+        λ_blendwall_biodiesel=Float64[], λ_nonsoy_capacity=Float64[]
     )
     for s in scenario_list
         d = solutions[s].duals
         push!(df, (String(s), d.λ_rfs, d.λ_rfs_avi, d.λ_lcfs, d.r_land,
-            d.λ_blendwall_ethanol, d.λ_blendwall_biodiesel #d.λ_nonsoy_capacity
+            d.λ_blendwall_ethanol, d.λ_blendwall_biodiesel, d.λ_nonsoy_capacity
         )
         )
     end
