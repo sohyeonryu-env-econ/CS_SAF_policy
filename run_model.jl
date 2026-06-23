@@ -56,7 +56,7 @@ function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.00
         config = (t=0.0, θ_avi=mid, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
         model = SAFModel.build_unified_model(params, config)
         optimize!(model)
-        !is_solved_and_feasible(model) && (high = mid; continue)
+        !is_solved_and_feasible(model) && (high=mid; continue)
         total_saf = sum(value(model[:q][g]) for g in SAF_GOODS)
         println("  Iter $iter: θ_avi = $(round(mid, digits=6)), SAF = $(round(total_saf, digits=6))")
         rfs_result = (policy_value=mid, model=model, actual_saf=total_saf,
@@ -98,7 +98,7 @@ function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.00
 
             model = SAFModel.build_unified_model(params, config)
             optimize!(model)
-            !is_solved_and_feasible(model) && (high = mid; continue)
+            !is_solved_and_feasible(model) && (high=mid; continue)
 
             sol = extract_solution(model, policy_type)
             em = calculate_emissions_detail(sol, params)
@@ -142,3 +142,85 @@ for target_saf in [3.0, 5.0]
     @save joinpath(OUTPUT_DIR, "results_target$(suffix).jld2") results_target policy_configs_target equivalent_policies welfare_target target_saf target_emissions
     println("✓ Saved results_target$(suffix).jld2")
 end
+
+# =================================================================================
+# 3. RFS vs. LCFS acheving 50% CI reduction
+# =================================================================================
+
+AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
+    :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+δ = params.coeff.delta
+
+# 평균 CI ratio: aviation pool 평균 CI / jet fuel CI
+function aviation_ci_ratio(model)
+    num = sum(δ[g] * value(model[:q][g]) for g in AVIATION_FUELS)
+    den = δ[:jet_fuel] * sum(value(model[:q][g]) for g in AVIATION_FUELS)
+    return num / den
+end
+
+# LCFS σ=0.5 → 평균 CI를 jet fuel 대비 50% 감소
+config_lcfs50 = (t=0.0, θ_avi=0.0, σ=0.5, p=0.0, carbon_tax_scope=:aviation)
+
+# RFS θ_avi를 bisection으로 찾기: aviation_ci_ratio = 0.5
+function find_rfs_for_50CI(params; target_ratio=0.5, tolerance=1e-5, high_init=16.0)
+    println("\n── Finding RFS θ_avi for aviation CI ratio = $(target_ratio) ──")
+    low, high = 0.0, high_init
+    rfs_result = nothing
+    converged = false
+    for iter in 1:200
+        (high - low) < 1e-6 && break
+        mid = (low + high) / 2.0
+        config = (t=0.0, θ_avi=mid, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
+        model = SAFModel.build_unified_model(params, config)
+        optimize!(model)
+        if !is_solved_and_feasible(model)
+            high = mid
+            continue
+        end
+        ratio = aviation_ci_ratio(model)
+        println("  Iter $iter: θ_avi = $(round(mid, digits=6)), CI ratio = $(round(ratio, digits=6))")
+        rfs_result = (policy_value=mid, model=model, actual_ratio=ratio, config=config)
+        if abs(ratio - target_ratio) < tolerance
+            println("  ✓ Converged")
+            converged = true
+            break
+        end
+        # θ_avi 클수록 저탄소 SAF 투입 증가 → ratio 감소
+        ratio > target_ratio ? (low = mid) : (high = mid)
+    end
+    return rfs_result, converged
+end
+
+rfs_result, converged = find_rfs_for_50CI(params)
+
+if !converged && rfs_result.actual_ratio > 0.5
+    println("\n" * "="^80)
+    println("⚠ RFS로는 aviation pool 평균 CI 50% 감소에 도달 불가능합니다.")
+    println("  Eligible SAF를 최대로 투입해도 최저 도달 CI ratio = $(round(rfs_result.actual_ratio, digits=6)) > 0.5")
+    println("  (Conventional ATJ SAF가 50% CI threshold를 초과하여 mandate에서 제외되기 때문)")
+    println("="^80)
+end
+
+config_rfs50 = rfs_result.config
+println("\n→ RFS θ_avi = $(round(rfs_result.policy_value, digits=6)), achieved CI ratio = $(round(rfs_result.actual_ratio, digits=6))")
+
+# 세 시나리오 solve
+policy_configs_50CI = (
+    statusquo=SQ_CONFIG,
+    rfs=config_rfs50,
+    lcfs=config_lcfs50
+)
+
+results_50CI = Dict()
+for scenario in [:statusquo, :rfs, :lcfs]
+    println("\n-- Running: $scenario --")
+    results_50CI[scenario] = extract_solution(
+        run_scenario(scenario, params, policy_configs_50CI), scenario)
+end
+
+welfare_50CI = display_comparison_tables(results_50CI, params, policy_configs_50CI;
+    scenarios=[:rfs, :lcfs],
+    title="RFS vs LCFS: 50% Aviation CI Reduction")
+
+@save joinpath(OUTPUT_DIR, "results_50CI.jld2") results_50CI policy_configs_50CI welfare_50CI
+println("✓ Saved results_50CI.jld2")

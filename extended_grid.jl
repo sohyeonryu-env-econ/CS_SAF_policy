@@ -206,7 +206,7 @@ for (policy_type, _, _, _) in POLICIES
 
     crossings = [(ab[i] + (-ms[i] / (ms[i+1] - ms[i])) * (ab[i+1] - ab[i]),
         pv[i] + (-ms[i] / (ms[i+1] - ms[i])) * (pv[i+1] - pv[i]))
-                 for i in 1:length(ms)-1 if ms[i] * ms[i+1] <= 0]
+                 for i in 1:(length(ms)-1) if ms[i] * ms[i+1] <= 0]
 
     println("$policy_type:")
     if isempty(crossings)
@@ -432,6 +432,42 @@ function plot_land_use_stacked_by_policy(results_extended_analysis; vlines=nothi
 end
 
 display(plot_land_use_stacked_by_policy(results_extended_analysis; vlines=vlines_data))
+
+# Land rent by policy
+function plot_land_rent_by_policy(results_extended_analysis; vlines=nothing)
+    solutions = results_extended_analysis.solutions
+    plots_list = []
+
+    for (policy_type, _, xlabel, title) in POLICIES
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        xs = [get_x(s, policy_type) for s in sorted if !isnothing(solutions[s])]
+        rs = [solutions[s].duals.r_land for s in sorted if !isnothing(solutions[s])]
+
+        p = plot(xlabel=xlabel, ylabel="\$/acre", title=title,
+            titlefontsize=22, titlefontweight=:bold,
+            legend=false, grid=true,
+            xlims=extrema(xs),
+            left_margin=15Plots.mm, bottom_margin=12Plots.mm,
+            guidefontsize=18, tickfontsize=14)
+
+        plot!(p, xs, rs,
+            linewidth=2, color=:black, marker=:circle, markersize=2,
+            markerstrokewidth=0, label="Land rent")
+
+        add_vlines!(p, policy_type, vlines; annotate_y=maximum(rs) * 0.97)
+        push!(plots_list, p)
+    end
+
+    return plot(
+        plot(plots_list..., layout=(2, 2)),
+        size=(2200, 1500),
+        plot_title="Land Rent by Policy Stringency",
+        plot_titlefontsize=22, plot_titlefontweight=:bold,
+        margin=10Plots.mm)
+end
+
+display(plot_land_rent_by_policy(results_extended_analysis; vlines=vlines_data))
+
 # ── Stacked fuel production ──────────────────────────────────────────────────
 function plot_fuel_production_stacked(results_df, fuel_config; vlines=nothing)
     plots = []
@@ -929,230 +965,9 @@ display(plot_prices_by_policy(results_extended_analysis,
         (:rd_nonsoy, "Non-Soy RD", :orange, false), (:biodiesel_soy, "Soy Biodiesel", :blue, false),
         (:biodiesel_nonsoy, "Non-Soy Biodiesel", :purple, false)],
     (sol, g) -> r_e[:diesel] * (g == :diesel ? 1.0 : g in (:biodiesel_soy, :biodiesel_nonsoy) ?
-                                β[(:biodiesel, :diesel)] : β[(:rd, :diesel)]) * sol.p_c[:die],
+                                                     β[(:biodiesel, :diesel)] : β[(:rd, :diesel)]) * sol.p_c[:die],
     (0, 6.5), sol -> sol.p_c[:die], (0.0, 2.0), "\$/diesel mile", :brown, "Diesel Consumer Price",
     ""; vlines=vlines_data))
 
 display(plot_feedstock_prices_by_policy(results_extended_analysis; vlines=vlines_data))
 
-# =================================================================================
-# 9. Sensitivity Analysis (c0 ATJ/HEFA)
-# =================================================================================
-
-c0_scenarios = [(atj=0.32, hefa=0.44, label="Low"),
-    (atj=2.3, hefa=1.145, label="Kumar TEA"),
-    (atj=4.91, hefa=1.56, label="High")]
-
-sensitivity_extended = Dict()
-for c0 in c0_scenarios
-    println("\nRunning: c0_atj=$(c0.atj), c0_hefa=$(c0.hefa)")
-    new_fuel = deepcopy(params.supply.fuel)
-    new_fuel[:saf_atj_shared] = merge(new_fuel[:saf_atj_shared], (c0=c0.atj,))
-    new_fuel[:saf_hefa_shared] = merge(new_fuel[:saf_hefa_shared], (c0=c0.hefa,))
-    new_params = merge(params, (supply=(fuel=new_fuel, land=params.supply.land),))
-    _, sols_s = run_extended_analysis(new_params, EXTENDED_POLICY_MATRIX, verbose=false)
-    sensitivity_extended[c0.label] = calculate_extended_welfare_analysis(
-        sols_s, EXTENDED_POLICY_MATRIX, new_params, scc=190.0)
-end
-
-@save joinpath(OUTPUT_DIR, "sensitivity_extended_c0.jld2") sensitivity_extended c0_scenarios
-println("✓ Saved sensitivity_extended_c0.jld2")
-
-function plot_saf_stacked_sensitivity(sensitivity_extended, c0_scenarios, fuel_config)
-    SAF_COLS = [:q_saf_atj_conv, :q_saf_atj_cs, :q_saf_hefa_conv, :q_saf_hefa_cs, :q_saf_hefa_nonsoy]
-    all_plots, label_plots = [], []
-
-    for c0 in c0_scenarios
-        df_s = results_to_dataframe(sensitivity_extended[c0.label], EXTENDED_POLICY_MATRIX)
-        row_idx = findfirst(c -> c.label == c0.label, c0_scenarios)
-
-        for (col_idx, (policy_type, xcol, xlabel, pol_title)) in enumerate(POLICIES)
-            df = sort(filter(r -> r.policy_type == String(policy_type), df_s), xcol)
-            xs = df[!, xcol]
-            biofuel_sorted = sort(fuel_config.biofuel_types, by=x -> mean(df[!, x[1]]), rev=true)
-
-            p = plot(
-                xlabel=row_idx == length(c0_scenarios) ? xlabel : "",
-                ylabel=col_idx == 1 ? "(billion gal)" : "",
-                title=row_idx == 1 ? pol_title : "",
-                titlefontsize=20, titlefontweight=:bold, legend=false, grid=true,
-                xlims=extrema(xs), ylims=fuel_config.ylims, margin=5Plots.mm, guidefontsize=10)
-
-            main_vals = df[!, fuel_config.main_fuel]
-            plot!(p, xs, main_vals, fillrange=fuel_config.ylims[1],
-                fillalpha=0.7, fillcolor=:lightgray, linewidth=1.5, color=:black)
-            cum = copy(main_vals)
-            for (col, _, color) in biofuel_sorted
-                new_cum = cum .+ df[!, col]
-                plot!(p, xs, new_cum, fillrange=cum, fillalpha=0.7, fillcolor=color,
-                    linewidth=1.5, color=color)
-                cum = new_cum
-            end
-            push!(all_plots, p)
-        end
-
-        p_lbl = plot(grid=false, showaxis=false, ticks=false, xlims=(0, 1), ylims=(0, 1), framestyle=:none)
-        annotate!(p_lbl, 0.5, 0.5, text(c0.label, :black, :center, 20, rotation=90))
-        push!(label_plots, p_lbl)
-    end
-
-    combined = []
-    for (i, lp) in enumerate(label_plots)
-        push!(combined, lp)
-        append!(combined, all_plots[(i-1)*4+1:i*4])
-    end
-
-    leg_items = vcat([("Jet Fuel", :black)], [(lbl, color) for (_, lbl, color) in fuel_config.biofuel_types])
-    return plot(
-        plot(combined..., layout=grid(length(c0_scenarios), 5, widths=[0.05, 0.2375, 0.2375, 0.2375, 0.2375])),
-        make_legend_panel(leg_items, ncols=fuel_config.legendcolumns, fontsize=15),
-        layout=grid(2, 1, heights=[0.97, 0.03]), size=(3000, 2000),
-        plot_title="SAF Production by Policy Stringency (c0 Sensitivity)",
-        plot_titlefontsize=20, plot_titlefontweight=:bold, margin=8Plots.mm)
-end
-
-p_sens = plot_saf_stacked_sensitivity(sensitivity_extended, c0_scenarios, aviation_config)
-display(p_sens)
-savefig(p_sens, joinpath(OUTPUT_DIR, "saf_stacked_sensitivity_c0.png"))
-
-# ── Dual variables ─────────────────────────────────────────────────────────
-function plot_dual_variables_by_policy(results_extended_analysis; vlines=nothing)
-    solutions = results_extended_analysis.solutions
-    dual_info = [
-        (:λ_rfs, "λ RFS D6", :steelblue),
-        (:λ_blendwall_ethanol, "λ Blendwall (Ethanol)", :orange),
-        (:λ_blendwall_biodiesel, "λ Blendwall (Biodiesel)", :green),
-        (:λ_nonsoy_capacity, "λ Non-soy Capacity", :red),
-    ]
-
-    all_plots = []
-
-    for (dual_key, dual_label, dual_color) in dual_info
-        for (policy_type, _, xlabel, pol_title) in POLICIES
-            sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
-            xs = Float64[]
-            ys = Float64[]
-            for s in sorted
-                sol = solutions[s]
-                isnothing(sol) && continue
-                push!(xs, get_x(s, policy_type))
-                push!(ys, getfield(sol.duals, dual_key))
-            end
-
-            row_idx = findfirst(d -> d[1] == dual_key, dual_info)
-            col_idx = findfirst(p -> p[1] == policy_type, POLICIES)
-
-            # λ_blendwall_biodiesel 행에만 y축 범위 고정
-            ylims_val = dual_key == :λ_blendwall_biodiesel ? (0.0, 0.1) : :auto
-
-            p = plot(
-                xlabel=row_idx == length(dual_info) ? xlabel : "",
-                ylabel=col_idx == 1 ? dual_label : "",
-                title=row_idx == 1 ? pol_title : "",
-                titlefontsize=22, titlefontweight=:bold,
-                legend=false, grid=true,
-                xlims=extrema(xs),
-                ylims=ylims_val,
-                left_margin=col_idx == 1 ? 20Plots.mm : 5Plots.mm,
-                bottom_margin=row_idx == length(dual_info) ? 12Plots.mm : 2Plots.mm,
-                top_margin=row_idx == 1 ? 8Plots.mm : 2Plots.mm,
-                guidefontsize=20, tickfontsize=13
-            )
-            plot!(p, xs, ys, linewidth=2.5, color=dual_color)
-            hline!(p, [0], color=:gray, linestyle=:dot, linewidth=1.2, label="", alpha=0.6)
-            add_vlines!(p, policy_type, vlines;
-                annotate_y=isempty(ys) ? 1.0 : maximum(ys) * 0.95)
-            push!(all_plots, p)
-        end
-    end
-
-    return plot(
-        plot(all_plots..., layout=(length(dual_info), length(POLICIES))),
-        layout=grid(2, 1, heights=[0.96, 0.04]),
-        size=(2400, 1800)
-    )
-end
-
-display(plot_dual_variables_by_policy(results_extended_analysis; vlines=vlines_data))
-
-lcfs_scenarios = sort_scenarios(results_extended_analysis.scenario_groups[:lcfs])
-lcfs_scenarios = lcfs_scenarios[1:min(50, length(lcfs_scenarios))]
-df_lcfs = DataFrame(
-    scenario=String[],
-    conv_atj_saf=Float64[],
-    nonsoy_hefa_saf=Float64[]
-)
-
-for scenario in lcfs_scenarios
-    sol = results_extended_analysis.solutions[scenario]
-    isnothing(sol) && continue
-
-    push!(df_lcfs, (
-        String(scenario),
-        sol.q[:saf_atj_conv],
-        sol.q[:saf_hefa_nonsoy]
-    ))
-end
-
-println(df_lcfs)
-
-# =================================================================================
-# 10. RFS & LCFS 전용 듀얼 변수 그림
-# =================================================================================
-
-function plot_policy_specific_duals(results_extended_analysis; vlines=nothing)
-    solutions = results_extended_analysis.solutions
-
-    # RFS 그림
-    rfs_sorted = sort_scenarios(results_extended_analysis.scenario_groups[:rfs])
-    rfs_xs = [get_x(s, :rfs) for s in rfs_sorted if !isnothing(solutions[s])]
-    rfs_ys = [solutions[s].duals.λ_rfs_avi for s in rfs_sorted if !isnothing(solutions[s])]
-
-    p_rfs = plot(
-        xlabel="RFS Aviation Mandate (θ_avi)", ylabel="λ RFS Aviation",
-        title="RFS Dual Variable", titlefontsize=22, titlefontweight=:bold,
-        legend=false, grid=true,
-        linewidth=3, color=:steelblue, marker=:circle, markersize=6,
-        left_margin=18Plots.mm, bottom_margin=15Plots.mm,
-        guidefontsize=18, tickfontsize=14,
-        size=(900, 600)
-    )
-    plot!(p_rfs, rfs_xs, rfs_ys)
-    hline!(p_rfs, [0], color=:gray, linestyle=:dot, linewidth=2, label="", alpha=0.6)
-    if !isnothing(vlines) && haskey(vlines, :rfs)
-        add_vlines!(p_rfs, :rfs, vlines; annotate_y=maximum(rfs_ys) * 0.95)
-    end
-
-    # LCFS 그림
-    lcfs_sorted = sort_scenarios(results_extended_analysis.scenario_groups[:lcfs])
-    lcfs_xs = [get_x(s, :lcfs) for s in lcfs_sorted if !isnothing(solutions[s])]
-    lcfs_ys = [solutions[s].duals.λ_lcfs for s in lcfs_sorted if !isnothing(solutions[s])]
-
-    p_lcfs = plot(
-        xlabel="LCFS Standard (σ)", ylabel="λ LCFS",
-        title="LCFS Dual Variable", titlefontsize=22, titlefontweight=:bold,
-        legend=false, grid=true,
-        linewidth=3, color=:darkgreen, marker=:circle, markersize=6,
-        left_margin=18Plots.mm, bottom_margin=15Plots.mm,
-        guidefontsize=18, tickfontsize=14,
-        size=(900, 600)
-    )
-    plot!(p_lcfs, lcfs_xs, lcfs_ys)
-    hline!(p_lcfs, [0], color=:gray, linestyle=:dot, linewidth=2, label="", alpha=0.6)
-    if !isnothing(vlines) && haskey(vlines, :lcfs)
-        add_vlines!(p_lcfs, :lcfs, vlines; annotate_y=maximum(lcfs_ys) * 0.95)
-    end
-
-    return plot(p_rfs, p_lcfs, layout=(1, 2), size=(1800, 600),
-        plot_title="Policy-Specific Dual Variables",
-        plot_titlefontsize=24, plot_titlefontweight=:bold,
-        margin=12Plots.mm)
-end
-
-display(plot_policy_specific_duals(results_extended_analysis; vlines=vlines_data))
-
-carbontax_df = filter(r -> r.policy_type == "carbontax", results_df)
-sort!(carbontax_df, :t)
-
-# 처음 20개 행 확인
-first(carbontax_df[!, [:t, :q_saf_atj_conv, :q_saf_atj_cs, :q_saf_hefa_nonsoy]], 20)

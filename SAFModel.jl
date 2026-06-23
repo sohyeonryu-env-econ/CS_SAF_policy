@@ -242,7 +242,7 @@ supply = (
 
 # land corn ratio
 ω = 0.54
-σ_cet = 0.0 # elasticity of transformation between corn and soybeans
+σ_cet = 0.1 # elasticity of transformation between corn and soybeans
 
 # κ: fixed costs of climate-smart practice adoption
 κ = 19.0  # $ per acre
