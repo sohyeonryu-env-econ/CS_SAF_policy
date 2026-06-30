@@ -69,11 +69,18 @@ const FOOD_GOODS = GOODS[18:19]  # all food goods
 # =====================
 
 # delta: Carbon Intensity (ton CO2e per gallon) all fuel and food goods
+#δ_vec = [
+#    0.01155398, 0.006545966, 0.005282266, 0.004869036, 0.004237186, 0.002486962,
+#    0.012051015, 0.003570138, 0.013507512, 0.002547826, 0.002680263,
+#    0.003202355, 0.002521693, 0.006295, 0.00783
+#]
+
 δ_vec = [
-    0.01155398, 0.006545966, 0.005282266, 0.004869036, 0.004237186, 0.002486962,
-    0.012051015, 0.003570138, 0.013507512, 0.002547826, 0.002680263,
-    0.003202355, 0.002521693, 0.006295, 0.00783
+    0.01155398, 0.007315559, 0.004674426, 0.004609978, 0.003717805, 0.002029502,
+    0.012039062, 0.003705445, 0.014101869, 0.003879759, 0.0022,
+    0.004729632, 0.002040691, 0.006031, 0.00783
 ]
+
 δ = Dict(g => v for (g, v) in zip(union(FUEL_GOODS, FOOD_GOODS), δ_vec))
 
 # gamma(γ): Feedstock Land use Coefficients (bu/acre)
@@ -122,20 +129,36 @@ soybean_to_meal = 0.02155 # metric ton / bushel of soybeans
 meal_per_oil = 2.22
 
 # delta_mj for IRA credit calculation
+#δ_mj_vec = [
+#    89.0,      # 1. jet_fuel
+#    56.5998,   # 2. saf_atj_conv
+#    46.5998,   # 3. saf_atj_cs
+#    23.9854,   # 4. saf_hefa_conv
+#    18.9854,
+#    17.46,     # 6. saf_hefa_nonsoy
+#    100.72,    # 7. gasoline
+#    40.17,     # 8. ethanol
+#    104.87,    # 9. diesel
+#    21.64,     # 10. biodiesel_soy
+#    17.96,     # 11. biodiesel_nonsoy
+#    24.61,     # 12. rd_soy
+#    16.69      # 13. rd_nonsoy
+#]
+
 δ_mj_vec = [
     89.0,      # 1. jet_fuel
-    56.5998,   # 2. saf_atj_conv
-    46.5998,   # 3. saf_atj_cs
-    23.9854,   # 4. saf_hefa_conv
-    13.9854,   # 5. saf_hefa_cs
-    17.46,     # 6. saf_hefa_nonsoy
+    50.86,   # 2. saf_atj_conv
+    29.97,   # 3. saf_atj_cs
+    22.91,   # 4. saf_hefa_conv
+    15.85,   # 5. saf_hefa_cs
+    16.06,     # 6. saf_hefa_nonsoy
     100.72,    # 7. gasoline
-    40.17,     # 8. ethanol
+    39.71,     # 8. ethanol
     104.87,    # 9. diesel
-    21.64,     # 10. biodiesel_soy
-    17.96,     # 11. biodiesel_nonsoy
-    24.61,     # 12. rd_soy
-    16.69      # 13. rd_nonsoy
+    18.86,     # 10. biodiesel_soy
+    17.25,     # 11. biodiesel_nonsoy
+    22.4,     # 12. rd_soy
+    15.74      # 13. rd_nonsoy
 ]
 
 δ_mj = Dict(g => v for (g, v) in zip(FUEL_GOODS, δ_mj_vec))

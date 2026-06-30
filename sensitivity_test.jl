@@ -1,0 +1,486 @@
+# elasticity_mac_sensitivity.jl
+# avi demand elasticity sensitivity: -0.1, -0.4, -1.0에 대해 정책 grid를 돌리고
+# MAC 곡선을 한 그래프에 (정책=색, elasticity=선스타일) 그림
+# SAFModel.jl은 수정하지 않음
+
+cd(@__DIR__)
+println("Working directory: ", pwd())
+
+include(joinpath(@__DIR__, "SAFModel.jl"))
+include(joinpath(@__DIR__, "analysis.jl"))
+
+import .SAFModel: params, build_unified_model, extract_solution, is_solved_and_feasible
+import .SAFAnalysis: calculate_emissions_detail, calculate_implicit_taxes,
+    calculate_cs_changes, calculate_ps_land_changes,
+    calculate_gr_changes, calculate_environmental_benefit,
+    calculate_total_welfare
+using DataFrames, Printf, Plots, JuMP, Statistics
+
+# =================================================================================
+# 0. elasticity별 params 생성 (avi만 교체, 메인 모듈 불변)
+# =================================================================================
+
+# create_demand_params와 동일한 로직 (export 안 되어 있어 재정의)
+function make_demand_params(sigma, p0, x0, p_high)
+    A_val = p0 * x0^(-1 / sigma)
+    return (k=1 / sigma, A=A_val, s=(p_high / A_val)^sigma)
+end
+
+# avi의 원본 기준점: p0=0.04, x0=1204.79, p_high=10.0
+function build_params_with_avi_elasticity(base_params, sigma_avi)
+    new_avi = make_demand_params(sigma_avi, 0.04, 1204.79, 10.0)
+    new_demand = copy(base_params.demand)
+    new_demand[:avi] = new_avi
+    return merge(base_params, (demand=new_demand,))
+end
+
+# =================================================================================
+# 1. 축소 grid (상한 유지, 간격만 확대)
+# =================================================================================
+
+const POLICY_RANGES_SENS = (
+    t=0:1.0:700,
+    θ_avi=0:0.003:0.9,
+    σ=0.0:0.001:0.5,
+    p=0:0.2:100.0
+)
+
+function create_policy_scenarios_sens()
+    scenarios = Dict()
+    for t in POLICY_RANGES_SENS.t
+        scenarios[Symbol("carbontax_$(round(Int, t))")] =
+            (t=Float64(t), θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
+    end
+    for θ in POLICY_RANGES_SENS.θ_avi
+        scenarios[Symbol("rfs_$(round(Int, θ * 1000))")] =
+            (t=0.0, θ_avi=Float64(θ), σ=0.0, p=0.0, carbon_tax_scope=:aviation)
+    end
+    for σ in POLICY_RANGES_SENS.σ
+        scenarios[Symbol("lcfs_$(round(Int, σ * 1000))")] =
+            (t=0.0, θ_avi=0.0, σ=Float64(σ), p=0.0, carbon_tax_scope=:aviation)
+    end
+    for p in POLICY_RANGES_SENS.p
+        scenarios[Symbol("taxcredit_$(round(Int, p * 100))")] =
+            (t=0.0, θ_avi=0.0, σ=0.0, p=Float64(p), carbon_tax_scope=:aviation)
+    end
+    scenarios[:statusquo] = (t=0.0, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
+    return scenarios
+end
+
+const POLICY_MATRIX_SENS = create_policy_scenarios_sens()
+
+# =================================================================================
+# 2. 헬퍼 (extended_grid.jl에서 필요한 것만 자체 포함)
+# =================================================================================
+
+sort_scenarios(list) = sort(list, by=s -> parse(Int, split(String(s), "_")[2]))
+
+function get_x_sens(s, policy_type, policy_matrix)
+    haskey(policy_matrix, s) || return NaN
+    c = policy_matrix[s]
+    policy_type == :carbontax ? c.t :
+    policy_type == :rfs ? c.θ_avi :
+    policy_type == :lcfs ? c.σ : c.p
+end
+
+# =================================================================================
+# 3. Run + welfare + MAC (elasticity 1개에 대해 전 과정)
+# =================================================================================
+
+function run_grid_for_elasticity(sigma_avi, policy_matrix; verbose=false)
+    p_elastic = build_params_with_avi_elasticity(params, sigma_avi)
+    solutions = Dict()
+    solved = failed = 0
+
+    for (name, config) in policy_matrix
+        try
+            model = build_unified_model(p_elastic, config)
+            optimize!(model)
+            if is_solved_and_feasible(model)
+                sol = extract_solution(model, name)
+                sol = merge(sol, (emissions=calculate_emissions_detail(sol, p_elastic),))
+                if name != :statusquo
+                    sol = merge(sol, (implicit_taxes=calculate_implicit_taxes(sol, p_elastic, config),))
+                end
+                solutions[name] = sol
+                solved += 1
+            else
+                solutions[name] = nothing
+                failed += 1
+            end
+        catch e
+            verbose && println("  ✗ $name: $e")
+            solutions[name] = nothing
+            failed += 1
+        end
+    end
+    @printf("  elasticity %.1f → solved %d / %d\n", sigma_avi, solved, solved + failed)
+    return solutions, p_elastic
+end
+
+function welfare_and_mac_for_elasticity(solutions, p_elastic; scc=190.0)
+    valid = filter(pr -> !isnothing(pr.second), solutions)
+    sq = valid[:statusquo]
+
+    cs = calculate_cs_changes(valid, sq, p_elastic)
+    ps = calculate_ps_land_changes(valid, sq, p_elastic)
+    gr = calculate_gr_changes(valid)
+    env = calculate_environmental_benefit(valid, sq, scc)
+    welf = calculate_total_welfare(cs, ps, gr, env)
+
+    groups = (
+        carbontax=[k for k in keys(valid) if startswith(String(k), "carbontax_")],
+        rfs=[k for k in keys(valid) if startswith(String(k), "rfs_")],
+        lcfs=[k for k in keys(valid) if startswith(String(k), "lcfs_")],
+        taxcredit=[k for k in keys(valid) if startswith(String(k), "taxcredit_")],
+    )
+
+    sq_em = sq.emissions.total
+    mac = Dict()
+    for (pt, slist) in pairs(groups)
+        sorted = sort_scenarios(slist)
+        data = []
+        for i in 2:length(sorted)
+            s_i, s_p = sorted[i], sorted[i-1]
+            Δem = valid[s_i].emissions.total - valid[s_p].emissions.total
+            abs(Δem) < 1e-6 && continue
+            Δps = welf[s_i].private_surplus - welf[s_p].private_surplus
+            Δsw = welf[s_i].social_welfare - welf[s_p].social_welfare
+            push!(data, (
+                scenario=s_i,
+                emission=valid[s_i].emissions.total,
+                mac_private=Δps / Δem,
+                mac_social=Δsw / Δem
+            ))
+        end
+        mac[pt] = data
+    end
+
+    return (mac=mac, sq_em=sq_em, welfare=welf, solutions=valid)
+end
+
+# =================================================================================
+# 4. 세 elasticity 실행
+# =================================================================================
+
+const ELASTICITIES = [-0.2, -0.4, -0.6]
+
+println("\n=== Running policy grid for each elasticity ===")
+results_by_elasticity = Dict{Float64,Any}()
+for σ_avi in ELASTICITIES
+    sols, p_el = run_grid_for_elasticity(σ_avi, POLICY_MATRIX_SENS)
+    results_by_elasticity[σ_avi] = welfare_and_mac_for_elasticity(sols, p_el; scc=190.0)
+end
+
+
+# =================================================================================
+# 5. MAC 3개 패널 분리: elasticity별 패널, 각 패널 안에 정책 4개(색 구분)
+# =================================================================================
+
+function plot_mac_panels(results_by_elasticity, elasticities;
+    use_social=true, max_ab=0.13, y_min=-250.0, y_max=2200.0,
+    fig_size=(2400, 1000))
+
+    bg = RGB(0.96, 0.96, 0.94)
+    policy_colors = [(:carbontax, :blue), (:rfs, :red), (:lcfs, :green), (:taxcredit, :purple)]
+    policy_labels = Dict(:carbontax => "Carbon Tax", :rfs => "RFS Aviation",
+        :lcfs => "LCFS", :taxcredit => "Tax Credit")
+    key = use_social ? :mac_social : :mac_private
+
+    function make_panel(σ_avi, show_y)
+        res = results_by_elasticity[σ_avi]
+        sq_em = res.sq_em
+
+        p = plot(title="ε = $(σ_avi)",
+            titlefontsize=22, titlefontweight=:bold,
+            ylabel=show_y ? "MAC (\$/ton CO₂)" : "",
+            xlabel="Cumulative Abatement (Billion tons CO₂)",
+            legend=false, grid=true,
+            xlims=(0, max_ab), ylims=(y_min, y_max),
+            yticks=collect(-200:200.0:y_max),
+            left_margin=show_y ? 22Plots.mm : 6Plots.mm,
+            right_margin=8Plots.mm, bottom_margin=14Plots.mm, top_margin=10Plots.mm,
+            guidefontsize=20, tickfontsize=15,
+            background_color_inside=bg, background_color=:white)
+
+        for (pt, color) in policy_colors
+            data = pt in [:taxcredit, :lcfs] ? res.mac[pt][2:end] : res.mac[pt]
+            ab = [sq_em - d.emission for d in data if sq_em - d.emission <= max_ab]
+            val = [getfield(d, key) for d in data if sq_em - d.emission <= max_ab]
+            isempty(ab) && continue
+            idx = sortperm(ab)
+            plot!(p, ab[idx], val[idx], linewidth=2.5, color=color)
+        end
+        hline!(p, [0], color=:gray, linestyle=:dot, linewidth=2.0, label="", alpha=0.8)
+        return p
+    end
+
+    panels = [make_panel(elasticities[i], i == 1) for i in 1:length(elasticities)]
+
+    # 정책 색 legend
+    p_leg = plot(legend=:top, legendcolumns=4, grid=false, showaxis=false,
+        ticks=false, xlims=(0, 1), ylims=(0, 1), framestyle=:none,
+        legendfontsize=14, background_color=:white)
+    for (pt, color) in policy_colors
+        plot!(p_leg, [NaN], [NaN], label=policy_labels[pt], linewidth=3, color=color)
+    end
+
+    return plot(
+        plot(panels..., layout=(1, length(elasticities))),
+        p_leg, layout=grid(2, 1, heights=[0.9, 0.1]),
+        size=fig_size,
+        plot_title=use_social ? "Social MAC by Aviation Demand Elasticity" :
+                   "Private MAC by Aviation Demand Elasticity",
+        plot_titlefontsize=24, plot_titlefontweight=:bold,
+        background_color=:white)
+end
+
+println("\n=== Plotting MAC panels ===")
+display(plot_mac_panels(results_by_elasticity, ELASTICITIES; use_social=true))
+
+# =================================================================================
+# 7. Aviation fuel 생산량 stacked: 4정책 × 3탄력성 = 12 패널
+#    jet fuel 위에 SAF 종류별로 쌓음
+# =================================================================================
+
+function plot_aviation_stacked_grid(results_by_elasticity, elasticities;
+    max_ab_policy=nothing, fig_size=(2600, 1700))
+
+    # 정책 메타 (x축 라벨, 제목용)
+    policy_meta = [
+        (:carbontax, :t, "Carbon Tax (\$/ton CO₂e)"),
+        (:rfs, :θ_avi, "RFS Aviation Mandate (θ_avi)"),
+        (:lcfs, :σ, "LCFS Standard (σ)"),
+        (:taxcredit, :p, "Tax Credit (\$/gallon)"),
+    ]
+
+    # 쌓는 순서 (아래부터): jet fuel → SAF들. 색은 기존 aviation_config와 동일
+    main_fuel = (:jet_fuel, "Jet Fuel", :lightgray, :black)
+    saf_layers = [
+        (:saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple),
+        (:saf_hefa_cs, "Climate-Smart HEFA-SAF", :orange),
+        (:saf_hefa_conv, "Conventional HEFA-SAF", :green),
+        (:saf_atj_cs, "Climate-Smart ATJ-SAF", :red),
+        (:saf_atj_conv, "Conventional ATJ-SAF", :blue),
+    ]
+
+    # config에서 정책 수준 뽑기
+    function get_policy_x(config, pt)
+        pt == :carbontax ? config.t :
+        pt == :rfs ? config.θ_avi :
+        pt == :lcfs ? config.σ : config.p
+    end
+
+    # y축 상한 통일 (전 패널 공통)
+    ymax = 0.0
+    for σ_avi in elasticities
+        res = results_by_elasticity[σ_avi]
+        for s in keys(res.solutions)
+            sol = res.solutions[s]
+            isnothing(sol) && continue
+            tot = sol.q[:jet_fuel] + sum(sol.q[g] for (g, _, _) in saf_layers)
+            tot > ymax && (ymax = tot)
+        end
+    end
+    ylims_fixed = (0, ymax * 1.05)
+
+    function make_panel(σ_avi, pt, xlabel, show_y, show_title, pol_title)
+        res = results_by_elasticity[σ_avi]
+        # 해당 정책 시나리오만 골라 정책수준 순으로 정렬
+        slist = [s for s in keys(res.solutions)
+                       if startswith(String(s), String(pt) * "_") && !isnothing(res.solutions[s])]
+        # 정책 수준으로 정렬 (config에서 추출)
+        xvals = [get_policy_x(POLICY_MATRIX_SENS[s], pt) for s in slist]
+        idx = sortperm(xvals)
+        slist = slist[idx]
+        xs = xvals[idx]
+
+        x_min, x_max = isempty(xs) ? (0.0, 1.0) : extrema(xs)
+
+        p = plot(
+            xlabel=xlabel,
+            ylabel=show_y ? "Quantity (billion gallons)" : "",
+            title=show_title ? pol_title : "",
+            titlefontsize=20, titlefontweight=:bold,
+            legend=false,
+            grid=true,
+            gridcolor=:gray,
+            gridalpha=0.7,
+            gridlinewidth=0.6,
+            xlims=(x_min, x_max), ylims=ylims_fixed,
+            left_margin=show_y ? 18Plots.mm : 5Plots.mm,
+            bottom_margin=12Plots.mm, top_margin=show_title ? 8Plots.mm : 3Plots.mm,
+            right_margin=5Plots.mm,
+            guidefontsize=17, tickfontsize=13)
+
+        isempty(slist) && return p
+
+        # jet fuel (맨 아래)
+        jet = [res.solutions[s].q[:jet_fuel] for s in slist]
+        plot!(p, xs, jet, fillrange=0, fillalpha=0.7,
+            fillcolor=main_fuel[3], linewidth=1.2, color=main_fuel[4], label="")
+
+        # SAF 누적
+        cum = copy(jet)
+        for (g, _, color) in saf_layers
+            layer = [res.solutions[s].q[g] for s in slist]
+            new_cum = cum .+ layer
+            # 0인 구간은 NaN으로 빼서 안 그림
+            mask = layer .> 1e-10
+            if any(mask)
+                plot!(p, xs[mask], new_cum[mask], fillrange=cum[mask],
+                    fillalpha=0.7, fillcolor=color, linewidth=1.2,
+                    color=color, label="")
+            end
+            cum = new_cum
+        end
+        return p
+    end
+
+    # 12 패널: 행 = elasticity(3), 열 = 정책(4)
+    panels = []
+    for (ri, σ_avi) in enumerate(elasticities)
+        for (ci, (pt, _, xlabel)) in enumerate(policy_meta)
+            # elasticity 라벨을 맨 왼쪽 열 ylabel 앞에 붙이기 위해 제목 활용
+            show_title = ri == 1
+            show_y = ci == 1
+            # 정책 제목에 맨 윗행만 정책명, 왼쪽 열엔 elasticity 표기
+            pol_title = ci == 1 ? "$(policy_meta[ci][1])  (ε=$(σ_avi))" :
+                        String(policy_meta[ci][1])
+            # 더 깔끔하게: 윗행은 정책명, 행 구분은 왼쪽에 ε
+            ptitle = show_title ? uppercasefirst(String(pt)) : ""
+            p = make_panel(σ_avi, pt, ri == length(elasticities) ? xlabel : "",
+                show_y, show_title, ptitle)
+            # 왼쪽 열 패널에 elasticity 주석
+            if ci == 1
+                annotate!(p, xlims(p)[1], ylims_fixed[2] * 0.9,
+                    text("ε = $(σ_avi)", :black, :left, 16))
+            end
+            push!(panels, p)
+        end
+    end
+
+    # legend
+    leg_items = vcat([(main_fuel[2], main_fuel[3])],
+        [(lbl, color) for (_, lbl, color) in saf_layers])
+    p_leg = plot(legend=:top, legendcolumns=6, grid=false, showaxis=false,
+        ticks=false, xlims=(0, 1), ylims=(0, 1), framestyle=:none,
+        legendfontsize=13, background_color=:white)
+    for (lbl, color) in leg_items
+        plot!(p_leg, [NaN], [NaN], label=lbl, linewidth=6, color=color)
+    end
+
+    return plot(
+        plot(panels..., layout=(length(elasticities), 4)),
+        p_leg, layout=grid(2, 1, heights=[0.93, 0.07]),
+        size=fig_size,
+        plot_title="Aviation Fuel Production by Policy and Elasticity",
+        plot_titlefontsize=24, plot_titlefontweight=:bold,
+        background_color=:white)
+end
+
+println("\n=== Plotting aviation fuel stacked grid (4 policy × 3 elasticity) ===")
+display(plot_aviation_stacked_grid(results_by_elasticity, ELASTICITIES))
+
+
+
+# =================================================================================
+# 8c. SAF share (윗줄) + total RPM (아랫줄) 8패널 분리
+# =================================================================================
+
+function plot_share_and_rpm_stacked(results_by_elasticity, elasticities; fig_size=(2200, 1200))
+
+    SAF_GOODS = [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    r_jet = params.coeff.r[:jet_fuel]
+    β_saf = params.coeff.beta[(:saf, :jet_fuel)]
+
+    policy_meta = [
+        (:carbontax, "Carbon Tax (\$/ton CO₂e)", "Carbon Tax"),
+        (:rfs, "RFS Aviation Mandate (θ_avi)", "RFS Aviation"),
+        (:lcfs, "LCFS Standard (σ)", "LCFS"),
+        (:taxcredit, "Tax Credit (\$/gallon)", "Tax Credit"),
+    ]
+    # elasticity별 색 (스타일 대신 색으로 구분하면 더 또렷)
+    ela_colors = Dict(elasticities[1] => :black,
+        elasticities[2] => :dodgerblue,
+        elasticities[3] => :crimson)
+
+    function get_policy_x(config, pt)
+        pt == :carbontax ? config.t :
+        pt == :rfs ? config.θ_avi :
+        pt == :lcfs ? config.σ : config.p
+    end
+    saf_share(sol) = r_jet * β_saf * sum(sol.q[g] for g in SAF_GOODS) / sol.x[:avi]
+
+    # RPM 공통 범위
+    rpm_min, rpm_max = Inf, -Inf
+    for σ_avi in elasticities, s in keys(results_by_elasticity[σ_avi].solutions)
+        sol = results_by_elasticity[σ_avi].solutions[s]
+        isnothing(sol) && continue
+        rpm_min = min(rpm_min, sol.x[:avi]);
+        rpm_max = max(rpm_max, sol.x[:avi])
+    end
+    rpm_lims = (floor(rpm_min/100)*100, ceil(rpm_max/100)*100)
+
+    # 데이터 추출 헬퍼
+    function series(pt, σ_avi, valfn)
+        res = results_by_elasticity[σ_avi]
+        slist = [s for s in keys(res.solutions)
+                       if startswith(String(s), String(pt)*"_") && !isnothing(res.solutions[s])]
+        isempty(slist) && return (Float64[], Float64[])
+        xv = [get_policy_x(POLICY_MATRIX_SENS[s], pt) for s in slist]
+        idx = sortperm(xv)
+        slist, xv = slist[idx], xv[idx]
+        return xv, [valfn(res.solutions[s]) for s in slist]
+    end
+
+    top, bot = [], []
+    for (pt, xlabel, ptitle) in policy_meta
+        show_y = pt == :carbontax
+
+        # 윗줄: SAF share
+        p_s = plot(ylabel=show_y ? "SAF blend share (%)" : "", title=ptitle,
+            titlefontsize=21, titlefontweight=:bold,
+            legend=false, grid=true, ylims=(-0.1, 1.0), xticks=:none,
+            left_margin=show_y ? 16Plots.mm : 4Plots.mm,
+            bottom_margin=2Plots.mm, top_margin=8Plots.mm, right_margin=8Plots.mm,
+            guidefontsize=20, tickfontsize=16)
+        for σ_avi in elasticities
+            xv, yv = series(pt, σ_avi, saf_share)
+            isempty(xv) && continue
+            plot!(p_s, xv, yv, linewidth=2.8, color=ela_colors[σ_avi])
+        end
+        push!(top, p_s)
+
+        # 아랫줄: total RPM
+        p_r = plot(xlabel=xlabel, ylabel=show_y ? "Total RPM (billion miles)" : "",
+            legend=false, grid=true, ylims=(0, 1380),
+            left_margin=show_y ? 16Plots.mm : 4Plots.mm,
+            bottom_margin=14Plots.mm, top_margin=2Plots.mm, right_margin=8Plots.mm,
+            guidefontsize=20, tickfontsize=16)
+        for σ_avi in elasticities
+            xv, yv = series(pt, σ_avi, sol -> sol.x[:avi])
+            isempty(xv) && continue
+            plot!(p_r, xv, yv, linewidth=2.8, color=ela_colors[σ_avi])
+        end
+        push!(bot, p_r)
+    end
+
+    p_leg = plot(legend=:top, legendcolumns=3, grid=false, showaxis=false,
+        ticks=false, xlims=(0, 1), ylims=(0, 1), framestyle=:none,
+        legendfontsize=18, background_color=:white)
+    for σ_avi in elasticities
+        plot!(p_leg, [NaN], [NaN], label="ε = $(σ_avi)", linewidth=3, color=ela_colors[σ_avi])
+    end
+
+    return plot(
+        plot(vcat(top, bot)..., layout=grid(2, 4)),
+        p_leg, layout=grid(2, 1, heights=[0.94, 0.06]),
+        size=fig_size,
+        #plot_title = "SAF Blend Share (top) and Total RPM (bottom) by Policy and Elasticity",
+        #plot_titlefontsize = 22, plot_titlefontweight = :bold,
+        background_color=:white)
+end
+
+println("\n=== Plotting share + RPM stacked ===")
+display(plot_share_and_rpm_stacked(results_by_elasticity, ELASTICITIES))
