@@ -55,8 +55,8 @@ end
 
 const POLICY_RANGES = (
     t=0:0.1:700,
-    θ_avi=0:0.001:0.9,
-    σ=0.0:0.0003:0.5,
+    θ_avi=0:0.005:0.95,
+    σ=0.0:0.0005:0.5,
     p=0:0.05:100.0
 )
 
@@ -229,17 +229,17 @@ end
 # 4. Load vlines data
 # =================================================================================
 
-@load joinpath(OUTPUT_DIR, "results_equivalent_emissions.jld2") equivalent_emission_policies
-ep_3B = equivalent_emission_policies
-@load joinpath(OUTPUT_DIR, "results_equivalent_emissions_5.jld2") equivalent_emission_policies
-ep_5B = equivalent_emission_policies
+@load joinpath(OUTPUT_DIR, "results_target.jld2") equivalent_policies
+ep_3B = equivalent_policies
+@load joinpath(OUTPUT_DIR, "results_target_6.jld2") equivalent_policies
+ep_6B = equivalent_policies
 
 statusquo_em = results_extended_analysis.solutions[:statusquo].emissions.total
 abatement_3B = statusquo_em - ep_3B[:rfs].actual_emission
-abatement_5B = statusquo_em - ep_5B[:rfs].actual_emission
-vlines_abatement = [(abatement_3B, "3B"), (abatement_5B, "5B")]
+abatement_6B = statusquo_em - ep_6B[:rfs].actual_emission
+vlines_abatement = [(abatement_3B, "3B"), (abatement_6B, "6B")]
 
-vlines_data = Dict(pt => [(ep_3B[pt].policy_value, "3B"), (ep_5B[pt].policy_value, "5B")]
+vlines_data = Dict(pt => [(ep_3B[pt].policy_value, "3B"), (ep_6B[pt].policy_value, "6B")]
                    for pt in [:carbontax, :rfs, :lcfs, :taxcredit])
 
 # =================================================================================
@@ -248,8 +248,7 @@ vlines_data = Dict(pt => [(ep_3B[pt].policy_value, "3B"), (ep_5B[pt].policy_valu
 
 
 function plot_mac_comparison_simple(results_extended_analysis, mac_extended;
-    vlines_abatement=nothing, y_max=800.0, y_min=-250.0, fig_size=(1800, 1400))
-
+    vlines_abatement=nothing, y_max=1080.0, y_min=-250.0, fig_size=(1600, 1200))
     sq_em = results_extended_analysis.solutions[:statusquo].emissions.total
     max_ab = 0.105
     bg = RGB(0.96, 0.96, 0.94)
@@ -257,9 +256,8 @@ function plot_mac_comparison_simple(results_extended_analysis, mac_extended;
         #(:rfsnoci, :orange),
         (:lcfs, :green), (:taxcredit, :purple)]
     policy_labels = Dict(:carbontax => "Carbon Tax", :rfs => "RFS Aviation",
-        #:rfsnoci => "RFS Aviation (no CI)", 
+        #:rfsnoci => "RFS Aviation (no CI)",
         :lcfs => "LCFS", :taxcredit => "Tax Credit")
-
     # collect plot data
     plot_data = Dict()
     for (pt, _) in policy_colors
@@ -271,9 +269,8 @@ function plot_mac_comparison_simple(results_extended_analysis, mac_extended;
         idx = sortperm(ab)
         plot_data[pt] = (ab=ab[idx], private=prv[idx], social=soc[idx])
     end
-
     function make_panel(key, title, show_y)
-        p = plot(title=title, titlefontsize=18, titlefontweight=:bold,
+        p = plot(title=title, titlefontsize=20, titlefontweight=:bold,
             ylabel=show_y ? "MAC (\$/ton CO₂)" : "",
             xlabel="Cumulative Abatement (Billion tons CO₂)",
             legend=false, grid=true,
@@ -281,38 +278,28 @@ function plot_mac_comparison_simple(results_extended_analysis, mac_extended;
             yticks=collect(-200:200.0:y_max),
             left_margin=show_y ? 22Plots.mm : 5Plots.mm,
             right_margin=8Plots.mm, bottom_margin=12Plots.mm, top_margin=8Plots.mm,
-            guidefontsize=20, tickfontsize=15,
+            guidefontsize=18, tickfontsize=18,
             background_color_inside=bg, background_color=:white)
         for (pt, color) in policy_colors
             haskey(plot_data, pt) || continue
             d = plot_data[pt]
             plot!(p, d.ab, key == :private ? d.private : d.social, linewidth=2.5, color=color)
         end
-        hline!(p, [0], color=:gray, linestyle=:dot, linewidth=2.0, label="", alpha=0.8)
-        if !isnothing(vlines_abatement)
-            for (j, (xval, vlabel)) in enumerate(vlines_abatement)
-                c = [:darkred, :darkblue][min(j, 2)]
-                vline!(p, [xval], color=c, linestyle=:dash, linewidth=1.8, label="")
-                annotate!(p, xval, y_max * 0.97, text(vlabel, c, :center, 9))
-            end
-        end
         return p
     end
-
     p_leg = plot(legend=:top, legendcolumns=5, grid=false, showaxis=false, ticks=false,
-        xlims=(0, 1), ylims=(0, 1), framestyle=:none, legendfontsize=12, background_color=:white)
+        xlims=(0, 1), ylims=(0, 1), framestyle=:none, legendfontsize=18, background_color=:white)
     for (pt, color) in policy_colors
         plot!(p_leg, [NaN], [NaN], label=policy_labels[pt], linewidth=3, color=color)
     end
-
     return plot(plot(make_panel(:private, "Private MAC", true), make_panel(:social, "Social MAC", false), layout=(1, 2)),
         p_leg, layout=grid(2, 1, heights=[0.95, 0.05]),
         size=fig_size, plot_title="",
-        plot_titlefontsize=25, plot_titlefontweight=:bold, background_color=:white)
+        plot_titlefontsize=30, plot_titlefontweight=:bold, background_color=:white)
 end
 
 display(plot_mac_comparison_simple(results_extended_analysis, mac_extended;
-    vlines_abatement=vlines_abatement, y_max=800.0, y_min=-250.0))
+    vlines_abatement=vlines_abatement, y_max=1080.0, y_min=-250.0))
 
 # =================================================================================
 # 6. Results DataFrame
@@ -438,20 +425,22 @@ function plot_land_use_stacked_by_policy(results_extended_analysis; vlines=nothi
 end
 
 display(plot_land_use_stacked_by_policy(results_extended_analysis; vlines=vlines_data))
+
 # ── Stacked fuel production ──────────────────────────────────────────────────
 function plot_fuel_production_stacked(results_df, fuel_config; vlines=nothing)
     plots = []
     for (policy_type, xcol, xlabel, title) in POLICIES
         df = sort(filter(r -> r.policy_type == String(policy_type), results_df), xcol)
         x_vals = df[!, xcol]
-        x_min, x_max = extrema(x_vals)
+        x_min = minimum(x_vals)
+        x_max = ep_6B[policy_type].policy_value
 
         #biofuel_sorted = sort(fuel_config.biofuel_types, by=x -> mean(df[!, x[1]]), rev=true)
         biofuel_sorted = fuel_config.biofuel_types  # 이렇게 하면 정의된 순서대로 깔림
 
         p = plot(xlabel=xlabel, ylabel="Quantity (billion gallons)", title=title,
             titlefontsize=25, titlefontweight=:bold, legend=false, grid=true,
-            xlims=(policy_type == :lcfs ? (0.0, 0.2) : (x_min, x_max)), ylims=fuel_config.ylims,
+            xlims=(x_min, x_max), ylims=fuel_config.ylims,
             margin=10Plots.mm, guidefontsize=25, left_margin=15Plots.mm,
             bottom_margin=15Plots.mm, tickfontsize=20, labelfontsize=23)
 
@@ -764,7 +753,7 @@ function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothi
 end
 
 # ── Implicit tax ─────────────────────────────────────────────────────────────
-function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
+function plot_implicit_tax_by_policy(results_extended_analysis, ep_5B; vlines=nothing)
     solutions = results_extended_analysis.solutions
 
     fuel_info = [(:jet_fuel, "Jet Fuel", :black, :solid), (:saf_atj_conv, "Conv ATJ-SAF", :blue, :solid),
@@ -772,31 +761,21 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
         (:saf_hefa_cs, "CS HEFA-SAF", :orange, :solid), (:saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple, :solid)]
     RFS_GROUP = [:saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
 
-    xlims_map = Dict(:carbontax => (0.0, 700.0), :rfs => (0.0, 0.9), :lcfs => (0.0, 0.5), :taxcredit => (0.0, 75.0))
-    ylims_map = Dict(:carbontax => (0.0, 10.0), :rfs => (-5.0, 2.0), :lcfs => (-10.0, 10.0), :taxcredit => (-55.0, 1.0))
+    # 각 정책의 6B stringency 값까지로 xlims 통일 (0 시작)
+    xlims_map = Dict(pt => (0.0, ep_6B[pt].policy_value) for pt in [:carbontax, :rfs, :lcfs, :taxcredit])
     it_key_map = Dict(:carbontax => :carbon_tax, :rfs => :rfs_avi, :lcfs => :lcfs, :taxcredit => :tax_credit)
 
     plots_list = []
     for (policy_type, _, xlabel, title) in POLICIES
         sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
         xlims_cur = xlims_map[policy_type]
-        ylims_cur = ylims_map[policy_type]
         it_key = it_key_map[policy_type]
-        THRESH = (ylims_cur[2] - ylims_cur[1]) * 0.05
-
-        p = plot(xlabel=xlabel, ylabel="Implicit Tax/Subsidy (\$/gallon)", title=title,
-            titlefontsize=28, titlefontweight=:bold, legend=false, grid=true,
-            xlims=xlims_cur, ylims=ylims_cur,
-            left_margin=22Plots.mm, bottom_margin=15Plots.mm,
-            right_margin=55Plots.mm, top_margin=10Plots.mm,
-            guidefontsize=22, tickfontsize=18)
-        hline!(p, [0], color=:gray, linestyle=:dot, linewidth=1.5, label="")
-
-        series_data = Dict{Symbol,Tuple{Vector{Float64},Vector{Float64}}}()
 
         fuels_to_plot = policy_type == :rfs ?
                         filter(x -> x[1] in [:jet_fuel, :saf_atj_conv], fuel_info) : fuel_info
 
+        # 먼저 시리즈 데이터 수집 (그리기 전에 ylims 계산 위해)
+        series_data = Dict{Symbol,Tuple{Vector{Float64},Vector{Float64}}}()
         for (g, _, color, lstyle) in fuels_to_plot
             xs, its = Float64[], Float64[]
             for s in sorted
@@ -814,7 +793,6 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
             end
             isempty(xs) && continue
             series_data[g] = (xs, its)
-            plot!(p, xs, its, linewidth=3.0, color=color, linestyle=lstyle)
         end
 
         # RFS: 나머지 SAF 대표값
@@ -827,12 +805,45 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
                 !hasproperty(sol, :implicit_taxes) && continue
                 isnothing(sol.implicit_taxes) && continue
                 !haskey(sol.implicit_taxes, g_rep) && continue
-                push!(xs, get_x(s, policy_type))
+                xval = get_x(s, policy_type)
+                xlims_cur[1] <= xval <= xlims_cur[2] || continue
+                push!(xs, xval)
                 push!(its, sol.implicit_taxes[g_rep][it_key])
             end
-            if !isempty(xs)
-                series_data[:all_other_saf] = (xs, its)
+            !isempty(xs) && (series_data[:all_other_saf] = (xs, its))
+        end
+
+        # 5B 범위 내 데이터로 ylims 자동 계산
+        all_yvals = Float64[]
+        for (_, (_, its)) in series_data
+            append!(all_yvals, its)
+        end
+        if isempty(all_yvals)
+            ylims_cur = (-1.0, 1.0)
+        else
+            ymin, ymax = minimum(all_yvals), maximum(all_yvals)
+            pad = (ymax - ymin) * 0.05
+            pad == 0 && (pad = abs(ymax) * 0.1 + 1.0)
+            ylims_cur = (ymin - pad, ymax + pad)
+        end
+        THRESH = (ylims_cur[2] - ylims_cur[1]) * 0.05
+
+        p = plot(xlabel=xlabel, ylabel="Implicit Tax/Subsidy (\$/gallon)", title=title,
+            titlefontsize=28, titlefontweight=:bold, legend=false, grid=true,
+            xlims=xlims_cur, ylims=ylims_cur,
+            left_margin=22Plots.mm, bottom_margin=15Plots.mm,
+            right_margin=95Plots.mm, top_margin=10Plots.mm,
+            guidefontsize=22, tickfontsize=18)
+        hline!(p, [0], color=:gray, linestyle=:dot, linewidth=1.5, label="")
+
+        # 실제 그리기
+        color_map = Dict(g => (color, lstyle) for (g, _, color, lstyle) in fuel_info)
+        for (g, (xs, its)) in series_data
+            if g == :all_other_saf
                 plot!(p, xs, its, linewidth=3.0, color=:darkgray)
+            else
+                c, ls = color_map[g]
+                plot!(p, xs, its, linewidth=3.0, color=c, linestyle=ls)
             end
         end
 
@@ -853,24 +864,36 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
             xw = xlims_cur[2] - xlims_cur[1]
             for (g, (lbl, color)) in label_map
                 haskey(label_pos, g) || continue
+                policy_type == :taxcredit && g == :jet_fuel && continue
                 yp = label_pos[g]
                 ylims_cur[1] - THRESH <= yp <= ylims_cur[2] + THRESH || continue
-                annotate!(p, xlims_cur[2] + xw * 0.02, yp, text(lbl, color, :left, 16))
+                annotate!(p, xlims_cur[2] + xw * 0.02, yp, text(lbl, color, :left, 22))
             end
         end
-        add_vlines!(p, policy_type, vlines; annotate_y=ylims_cur[2] * 0.93)
+
+        # 3B, 6B vline (라벨 크기 조절 가능)
+        if !isnothing(vlines) && haskey(vlines, policy_type)
+            vline_colors = [:darkred, :darkblue]
+            for (j, (xval, vlabel)) in enumerate(vlines[policy_type])
+                c = vline_colors[min(j, length(vline_colors))]
+                vline!(p, [xval], color=c, linestyle=:dash, linewidth=1.8, label="")
+                annotate!(p, xval, ylims_cur[2] + 0.5 * THRESH, text(vlabel, c, :center, 16))
+            end
+        end
+
         push!(plots_list, p)
     end
 
     return plot(
         plots_list...,
         layout=(2, 2),
-        size=(2600, 1800),
-        #plot_title="Implicit Tax / Subsidy on Aviation Fuels by Policy Stringency",
-        #plot_titlefontsize=28, plot_titlefontweight=:bold, margin=12Plots.mm
+        size=(2600, 1500),
     )
 end
-display(plot_implicit_tax_by_policy(results_extended_analysis; vlines=vlines_data))
+display(plot_implicit_tax_by_policy(results_extended_analysis, ep_6B; vlines=vlines_data))
+
+
+
 
 function plot_nonsoy_price_by_policy(results_extended_analysis; vlines=nothing)
     solutions = results_extended_analysis.solutions
@@ -1008,85 +1031,7 @@ display(plot_prices_by_policy(results_extended_analysis,
 
 display(plot_feedstock_prices_by_policy(results_extended_analysis; vlines=vlines_data))
 
-# =================================================================================
-# 9. Sensitivity Analysis (c0 ATJ/HEFA)
-# =================================================================================
 
-c0_scenarios = [(atj=0.32, hefa=0.44, label="Low"),
-    (atj=2.3, hefa=1.145, label="Kumar TEA"),
-    (atj=4.91, hefa=1.56, label="High")]
-
-sensitivity_extended = Dict()
-for c0 in c0_scenarios
-    println("\nRunning: c0_atj=$(c0.atj), c0_hefa=$(c0.hefa)")
-    new_fuel = deepcopy(params.supply.fuel)
-    new_fuel[:saf_atj_shared] = merge(new_fuel[:saf_atj_shared], (c0=c0.atj,))
-    new_fuel[:saf_hefa_shared] = merge(new_fuel[:saf_hefa_shared], (c0=c0.hefa,))
-    new_params = merge(params, (supply=(fuel=new_fuel, land=params.supply.land),))
-    _, sols_s = run_extended_analysis(new_params, EXTENDED_POLICY_MATRIX, verbose=false)
-    sensitivity_extended[c0.label] = calculate_extended_welfare_analysis(
-        sols_s, EXTENDED_POLICY_MATRIX, new_params, scc=190.0)
-end
-
-@save joinpath(OUTPUT_DIR, "sensitivity_extended_c0.jld2") sensitivity_extended c0_scenarios
-println("✓ Saved sensitivity_extended_c0.jld2")
-
-function plot_saf_stacked_sensitivity(sensitivity_extended, c0_scenarios, fuel_config)
-    SAF_COLS = [:q_saf_atj_conv, :q_saf_atj_cs, :q_saf_hefa_conv, :q_saf_hefa_cs, :q_saf_hefa_nonsoy]
-    all_plots, label_plots = [], []
-
-    for c0 in c0_scenarios
-        df_s = results_to_dataframe(sensitivity_extended[c0.label], EXTENDED_POLICY_MATRIX)
-        row_idx = findfirst(c -> c.label == c0.label, c0_scenarios)
-
-        for (col_idx, (policy_type, xcol, xlabel, pol_title)) in enumerate(POLICIES)
-            df = sort(filter(r -> r.policy_type == String(policy_type), df_s), xcol)
-            xs = df[!, xcol]
-            biofuel_sorted = sort(fuel_config.biofuel_types, by=x -> mean(df[!, x[1]]), rev=true)
-
-            p = plot(
-                xlabel=row_idx == length(c0_scenarios) ? xlabel : "",
-                ylabel=col_idx == 1 ? "(billion gal)" : "",
-                title=row_idx == 1 ? pol_title : "",
-                titlefontsize=20, titlefontweight=:bold, legend=false, grid=true,
-                xlims=extrema(xs), ylims=fuel_config.ylims, margin=5Plots.mm, guidefontsize=10)
-
-            main_vals = df[!, fuel_config.main_fuel]
-            plot!(p, xs, main_vals, fillrange=fuel_config.ylims[1],
-                fillalpha=0.7, fillcolor=:lightgray, linewidth=1.5, color=:black)
-            cum = copy(main_vals)
-            for (col, _, color) in biofuel_sorted
-                new_cum = cum .+ df[!, col]
-                plot!(p, xs, new_cum, fillrange=cum, fillalpha=0.7, fillcolor=color,
-                    linewidth=1.5, color=color)
-                cum = new_cum
-            end
-            push!(all_plots, p)
-        end
-
-        p_lbl = plot(grid=false, showaxis=false, ticks=false, xlims=(0, 1), ylims=(0, 1), framestyle=:none)
-        annotate!(p_lbl, 0.5, 0.5, text(c0.label, :black, :center, 20, rotation=90))
-        push!(label_plots, p_lbl)
-    end
-
-    combined = []
-    for (i, lp) in enumerate(label_plots)
-        push!(combined, lp)
-        append!(combined, all_plots[((i-1)*4+1):(i*4)])
-    end
-
-    leg_items = vcat([("Jet Fuel", :black)], [(lbl, color) for (_, lbl, color) in fuel_config.biofuel_types])
-    return plot(
-        plot(combined..., layout=grid(length(c0_scenarios), 5, widths=[0.05, 0.2375, 0.2375, 0.2375, 0.2375])),
-        make_legend_panel(leg_items, ncols=fuel_config.legendcolumns, fontsize=15),
-        layout=grid(2, 1, heights=[0.97, 0.03]), size=(3000, 2000),
-        plot_title="SAF Production by Policy Stringency (c0 Sensitivity)",
-        plot_titlefontsize=20, plot_titlefontweight=:bold, margin=8Plots.mm)
-end
-
-p_sens = plot_saf_stacked_sensitivity(sensitivity_extended, c0_scenarios, aviation_config)
-display(p_sens)
-savefig(p_sens, joinpath(OUTPUT_DIR, "saf_stacked_sensitivity_c0.png"))
 
 # ── Dual variables ─────────────────────────────────────────────────────────
 function plot_dual_variables_by_policy(results_extended_analysis; vlines=nothing)
@@ -1170,7 +1115,7 @@ end
 println(df_lcfs)
 
 # =================================================================================
-# 10. RFS & LCFS 전용 듀얼 변수 그림
+# 10. RFS & LCFS dual variable plots
 # =================================================================================
 
 function plot_policy_specific_duals(results_extended_analysis; vlines=nothing)
@@ -1223,11 +1168,5 @@ function plot_policy_specific_duals(results_extended_analysis; vlines=nothing)
 end
 
 display(plot_policy_specific_duals(results_extended_analysis; vlines=vlines_data))
-
-carbontax_df = filter(r -> r.policy_type == "carbontax", results_df)
-sort!(carbontax_df, :t)
-
-# 처음 20개 행 확인
-first(carbontax_df[!, [:t, :q_saf_atj_conv, :q_saf_atj_cs, :q_saf_hefa_nonsoy]], 20)
 
 

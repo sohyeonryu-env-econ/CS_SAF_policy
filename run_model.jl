@@ -56,7 +56,7 @@ function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.00
         config = (t=0.0, θ_avi=mid, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
         model = SAFModel.build_unified_model(params, config)
         optimize!(model)
-        !is_solved_and_feasible(model) && (high = mid; continue)
+        !is_solved_and_feasible(model) && (high=mid; continue)
         total_saf = sum(value(model[:q][g]) for g in SAF_GOODS)
         println("  Iter $iter: θ_avi = $(round(mid, digits=6)), SAF = $(round(total_saf, digits=6))")
         rfs_result = (policy_value=mid, model=model, actual_saf=total_saf,
@@ -98,7 +98,7 @@ function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.00
 
             model = SAFModel.build_unified_model(params, config)
             optimize!(model)
-            !is_solved_and_feasible(model) && (high = mid; continue)
+            !is_solved_and_feasible(model) && (high=mid; continue)
 
             sol = extract_solution(model, policy_type)
             em = calculate_emissions_detail(sol, params)
@@ -118,7 +118,7 @@ function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.00
     return equivalent_policies, target_emissions
 end
 
-for target_saf in [3.0, 5.0]
+for target_saf in [3.0, 6.0]
     suffix = target_saf == 3.0 ? "" : "_$(Int(target_saf))"
 
     println("\n" * "="^80)
