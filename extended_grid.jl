@@ -246,7 +246,6 @@ vlines_data = Dict(pt => [(ep_3B[pt].policy_value, "3B"), (ep_6B[pt].policy_valu
 # 5. MAC Plot
 # =================================================================================
 
-
 function plot_mac_comparison_simple(results_extended_analysis, mac_extended;
     vlines_abatement=nothing, y_max=1080.0, y_min=-250.0, fig_size=(1600, 1200))
     sq_em = results_extended_analysis.solutions[:statusquo].emissions.total
@@ -686,38 +685,39 @@ function plot_prices_by_policy(results_extended_analysis, fuel_info, ppu_fn,
 end
 
 # ── Feedstock prices ─────────────────────────────────────────────────────────
+
 function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothing)
     solutions = results_extended_analysis.solutions
-
     corn_info = [(:feedstock_corn_n, "Corn (Conv)", :darkorange, :solid),
         (:feedstock_corn_cs, "Corn (CS)", :darkorange, :dash)]
     soyoil_info = [(:feedstock_soy_n, "Soyoil (Conv)", :darkgreen, :solid),
         (:feedstock_soy_cs, "Soyoil (CS)", :darkgreen, :dash)]
-
     valid_sols = [sol for sol in values(solutions) if !isnothing(sol)]
     CORN_YLIMS = (floor(minimum(s.p_f[k] for s in valid_sols for (k, _, _, _) in corn_info)),
         ceil(maximum(s.p_f[k] for s in valid_sols for (k, _, _, _) in corn_info)))
     SOYOIL_YLIMS = (floor(minimum(s.p_f[k] for s in valid_sols for (k, _, _, _) in soyoil_info)),
         ceil(maximum(s.p_f[k] for s in valid_sols for (k, _, _, _) in soyoil_info)))
-
     plots_list = []
     for (policy_type, _, xlabel, title) in POLICIES
         sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        x_max = ep_6B[policy_type].policy_value
 
         p = plot(xlabel=xlabel, ylabel="\$/bushel (Corn)", title=title,
             yguidefontcolor=:darkorange,
             titlefontsize=22, titlefontweight=:bold, legend=false, grid=true,
-            ylims=CORN_YLIMS, left_margin=18Plots.mm, bottom_margin=12Plots.mm,
+            xlims=(0, x_max), ylims=15,
+            left_margin=18Plots.mm, bottom_margin=12Plots.mm,
             right_margin=22Plots.mm, top_margin=8Plots.mm,
             guidefontsize=20, tickfontsize=14)
-
         for (key, _, color, lstyle) in corn_info
             xs, ps = Float64[], Float64[]
             for s in sorted
                 sol = solutions[s]
                 isnothing(sol) && continue
+                xval = get_x(s, policy_type)
+                xval <= x_max || continue
                 key == :feedstock_corn_cs && sol.q_feedstock[:corn_cs] <= 1e-6 && continue
-                push!(xs, get_x(s, policy_type))
+                push!(xs, xval)
                 push!(ps, sol.p_f[key])
             end
             isempty(xs) && continue
@@ -727,14 +727,17 @@ function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothi
 
         pr = Plots.twinx(p)
         plot!(pr, ylabel="\$/lb (Soyoil)", yguidefontcolor=:darkgreen,
-            ylims=SOYOIL_YLIMS, guidefontsize=20, tickfontsize=14, legend=false, grid=false)
+            xlims=(0, x_max), ylims=2,
+            guidefontsize=20, tickfontsize=14, legend=false, grid=false)
         for (key, _, color, lstyle) in soyoil_info
             xs, ps = Float64[], Float64[]
             for s in sorted
                 sol = solutions[s]
                 isnothing(sol) && continue
+                xval = get_x(s, policy_type)
+                xval <= x_max || continue
                 key == :feedstock_soy_cs && sol.q_feedstock[:soy_cs] <= 1e-6 && continue
-                push!(xs, get_x(s, policy_type))
+                push!(xs, xval)
                 push!(ps, sol.p_f[key])
             end
             isempty(xs) && continue
@@ -742,15 +745,165 @@ function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothi
         end
         push!(plots_list, p)
     end
+    # linestyle까지 반영한 범례 패널 직접 생성
+    leg_items = vcat(
+        [(lbl, color, lstyle) for (_, lbl, color, lstyle) in corn_info],
+        [(lbl, color, lstyle) for (_, lbl, color, lstyle) in soyoil_info])
 
-    leg_items = vcat([(lbl, color) for (_, lbl, color, _) in corn_info],
-        [(lbl, color) for (_, lbl, color, _) in soyoil_info])
+    p_leg = plot(legend=:top, legendcolumns=4, grid=false, showaxis=false, ticks=false,
+        xlims=(0, 1), ylims=(0, 1), framestyle=:none, legendfontsize=14)
+    for (lbl, color, lstyle) in leg_items
+        plot!(p_leg, [NaN], [NaN], label=lbl, linewidth=3, color=color, linestyle=lstyle)
+    end
+
     return plot(plot(plots_list..., layout=(2, 2)),
-        make_legend_panel(leg_items, ncols=4, fontsize=14),
+        p_leg,
         layout=grid(2, 1, heights=[0.93, 0.07]), size=(2200, 1600),
         plot_title="",
         plot_titlefontsize=24, plot_titlefontweight=:bold, margin=10Plots.mm)
 end
+
+display(plot_feedstock_prices_by_policy(results_extended_analysis; vlines=vlines_data))
+
+# ── Feedstock prices & land rent (status quo 대비 변화율) ────────────────────
+function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothing)
+    solutions = results_extended_analysis.solutions
+    sq = solutions[:statusquo]
+
+    sq_corn = sq.p_f[:feedstock_corn_n]
+    sq_soy = sq.p_f[:feedstock_soy_n]
+    sq_rent = sq.duals.r_land
+
+    corn_info = [(:feedstock_corn_n, "Corn (Conv)", :darkorange, :solid, false, nothing),
+        (:feedstock_corn_cs, "Corn (CS)", :darkorange, :dash, true, :corn_cs)]
+    soyoil_info = [(:feedstock_soy_n, "Soyoil (Conv)", :darkgreen, :solid, false, nothing),
+        (:feedstock_soy_cs, "Soyoil (CS)", :darkgreen, :dash, true, :soy_cs)]
+
+    function row_ylims(getter)
+        vals = Float64[]
+        for (policy_type, _, _, _) in POLICIES
+            sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+            x_max = ep_6B[policy_type].policy_value
+            for s in sorted
+                sol = solutions[s]
+                isnothing(sol) && continue
+                get_x(s, policy_type) <= x_max || continue
+                append!(vals, getter(sol))
+            end
+        end
+        isempty(vals) && return (-1.0, 1.0)
+        lo, hi = minimum(vals), maximum(vals)
+        pad = (hi - lo) * 0.08
+        pad == 0 && (pad = abs(hi) * 0.1 + 1.0)
+        return (min(0.0, lo - pad), hi + pad)
+    end
+
+    corn_yl = row_ylims(sol -> [(sol.p_f[k] - sq_corn) / sq_corn * 100
+                                for (k, _, _, _, is_cs, csk) in corn_info
+                                if !(is_cs && sol.q_feedstock[csk] <= 1e-6)])
+    soy_yl = row_ylims(sol -> [(sol.p_f[k] - sq_soy) / sq_soy * 100
+                               for (k, _, _, _, is_cs, csk) in soyoil_info
+                               if !(is_cs && sol.q_feedstock[csk] <= 1e-6)])
+    rent_yl = row_ylims(sol -> [(sol.duals.r_land - sq_rent) / sq_rent * 100])
+
+    # feedstock 줄 패널: show_title(윗줄만), ylabel_txt는 1열만 넘김
+    function make_feedstock_panels(info, sq_base, ylabel_txt, yl; show_title, show_xlabel)
+        panels = []
+        for (col, (policy_type, _, xlabel, title)) in enumerate(POLICIES)
+            sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+            x_max = ep_6B[policy_type].policy_value
+
+            p = plot(xlabel=show_xlabel ? xlabel : "",
+                ylabel=col == 1 ? ylabel_txt : "",
+                title=show_title ? title : "",
+                titlefontsize=20, titlefontweight=:bold, legend=false, grid=true,
+                xlims=(0, x_max), ylims=yl,
+                left_margin=col == 1 ? 18Plots.mm : 5Plots.mm,
+                bottom_margin=show_xlabel ? 12Plots.mm : 4Plots.mm,
+                top_margin=show_title ? 8Plots.mm : 4Plots.mm,
+                guidefontsize=18, tickfontsize=14)
+
+            for (key, _, color, lstyle, is_cs, cs_key) in info
+                xs, ps = Float64[], Float64[]
+                for s in sorted
+                    sol = solutions[s]
+                    isnothing(sol) && continue
+                    xval = get_x(s, policy_type)
+                    xval <= x_max || continue
+                    is_cs && sol.q_feedstock[cs_key] <= 1e-6 && continue
+                    push!(xs, xval)
+                    push!(ps, (sol.p_f[key] - sq_base) / sq_base * 100)
+                end
+                isempty(xs) && continue
+                plot!(p, xs, ps, linewidth=3, color=color, linestyle=lstyle)
+            end
+            hline!(p, [0], color=:gray, linestyle=:dot, linewidth=1, label="")
+            add_vlines!(p, policy_type, vlines; annotate_y=yl[2] * 0.93)
+            push!(panels, p)
+        end
+        return panels
+    end
+
+    # land rent 줄 (맨 아래): 제목 없음, x라벨 있음
+    function make_rent_panels()
+        panels = []
+        for (col, (policy_type, _, xlabel, title)) in enumerate(POLICIES)
+            sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+            x_max = ep_6B[policy_type].policy_value
+
+            p = plot(xlabel=xlabel,
+                ylabel=col == 1 ? "% change (Land rent)" : "",
+                title="",
+                legend=false, grid=true,
+                xlims=(0, x_max), ylims=rent_yl,
+                left_margin=col == 1 ? 18Plots.mm : 5Plots.mm,
+                bottom_margin=12Plots.mm, top_margin=4Plots.mm,
+                guidefontsize=18, tickfontsize=14)
+
+            xs, ps = Float64[], Float64[]
+            for s in sorted
+                sol = solutions[s]
+                isnothing(sol) && continue
+                xval = get_x(s, policy_type)
+                xval <= x_max || continue
+                push!(xs, xval)
+                push!(ps, (sol.duals.r_land - sq_rent) / sq_rent * 100)
+            end
+            plot!(p, xs, ps, linewidth=3, color=:black)
+            hline!(p, [0], color=:gray, linestyle=:dot, linewidth=1, label="")
+            add_vlines!(p, policy_type, vlines; annotate_y=rent_yl[2] * 0.93)
+            push!(panels, p)
+        end
+        return panels
+    end
+
+    # 윗줄 corn(제목O, x라벨X), 가운데 soyoil(제목X, x라벨X), 아랫줄 rent(제목X, x라벨O)
+    corn_panels = make_feedstock_panels(corn_info, sq_corn, "% change (Corn)", corn_yl;
+        show_title=true, show_xlabel=false)
+    soy_panels = make_feedstock_panels(soyoil_info, sq_soy, "% change (Soyoil)", soy_yl;
+        show_title=false, show_xlabel=false)
+    rent_panels = make_rent_panels()
+
+    all_panels = vcat(corn_panels, soy_panels, rent_panels)
+
+    leg_items = vcat(
+        [(lbl, color, lstyle) for (_, lbl, color, lstyle, _, _) in corn_info],
+        [(lbl, color, lstyle) for (_, lbl, color, lstyle, _, _) in soyoil_info],
+        [("Land rent", :black, :solid)])
+    p_leg = plot(legend=:top, legendcolumns=5, grid=false, showaxis=false, ticks=false,
+        xlims=(0, 1), ylims=(0, 1), framestyle=:none, legendfontsize=17)
+    for (lbl, color, lstyle) in leg_items
+        plot!(p_leg, [NaN], [NaN], label=lbl, linewidth=3, color=color, linestyle=lstyle)
+    end
+
+    return plot(plot(all_panels..., layout=(3, 4)),
+        p_leg,
+        layout=grid(2, 1, heights=[0.95, 0.05]), size=(2600, 1900),
+        plot_title="",
+        plot_titlefontsize=24, plot_titlefontweight=:bold, margin=10Plots.mm)
+end
+
+display(plot_feedstock_prices_by_policy(results_extended_analysis; vlines=vlines_data))
 
 # ── Implicit tax ─────────────────────────────────────────────────────────────
 function plot_implicit_tax_by_policy(results_extended_analysis, ep_5B; vlines=nothing)
@@ -893,73 +1046,6 @@ end
 display(plot_implicit_tax_by_policy(results_extended_analysis, ep_6B; vlines=vlines_data))
 
 
-
-
-function plot_nonsoy_price_by_policy(results_extended_analysis; vlines=nothing)
-    solutions = results_extended_analysis.solutions
-
-    plots_list = []
-    for (policy_type, _, xlabel, title) in POLICIES
-        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
-        xs = Float64[]
-        ys = Float64[]
-        for s in sorted
-            sol = solutions[s]
-            isnothing(sol) && continue
-            push!(xs, get_x(s, policy_type))
-            push!(ys, sol.p_f[:feedstock_nonsoy])
-        end
-
-        p = plot(xlabel=xlabel, ylabel="\$/lb", title=title,
-            titlefontsize=18, titlefontweight=:bold,
-            legend=false, grid=true,
-            left_margin=15Plots.mm, bottom_margin=12Plots.mm,
-            guidefontsize=16, tickfontsize=13)
-        plot!(p, xs, ys, linewidth=2.5, color=:purple)
-        hline!(p, [0.49], color=:gray, linestyle=:dash, linewidth=1.5, label="baseline")
-        add_vlines!(p, policy_type, vlines; annotate_y=maximum(ys) * 0.97)
-        push!(plots_list, p)
-    end
-
-    return plot(plots_list..., layout=(2, 2), size=(2000, 1400),
-        plot_title="Non-soy Feedstock Price by Policy Stringency",
-        plot_titlefontsize=20, plot_titlefontweight=:bold, margin=10Plots.mm)
-end
-
-display(plot_nonsoy_price_by_policy(results_extended_analysis; vlines=vlines_data))
-
-function plot_nonsoy_quantity_by_policy(results_extended_analysis; vlines=nothing)
-    solutions = results_extended_analysis.solutions
-
-    plots_list = []
-    for (policy_type, _, xlabel, title) in POLICIES
-        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
-        xs = Float64[]
-        ys = Float64[]
-        for s in sorted
-            sol = solutions[s]
-            isnothing(sol) && continue
-            push!(xs, get_x(s, policy_type))
-            push!(ys, sol.q_feedstock[:nonsoy])
-        end
-
-        p = plot(xlabel=xlabel, ylabel="Billion lb", title=title,
-            titlefontsize=18, titlefontweight=:bold,
-            legend=false, grid=true,
-            left_margin=15Plots.mm, bottom_margin=12Plots.mm,
-            guidefontsize=16, tickfontsize=13)
-        plot!(p, xs, ys, linewidth=2.5, color=:purple)
-        hline!(p, [28.97], color=:gray, linestyle=:dash, linewidth=1.5, label="baseline")
-        add_vlines!(p, policy_type, vlines; annotate_y=maximum(ys) * 0.97)
-        push!(plots_list, p)
-    end
-
-    return plot(plots_list..., layout=(2, 2), size=(2000, 1400),
-        plot_title="Non-soy Feedstock Quantity by Policy Stringency",
-        plot_titlefontsize=20, plot_titlefontweight=:bold, margin=10Plots.mm)
-end
-
-display(plot_nonsoy_quantity_by_policy(results_extended_analysis; vlines=vlines_data))
 # =================================================================================
 # 8. Generate & Display All Plots
 # =================================================================================
@@ -1027,10 +1113,6 @@ display(plot_prices_by_policy(results_extended_analysis,
                                                      β[(:biodiesel, :diesel)] : β[(:rd, :diesel)]) * sol.p_c[:die],
     (0, 6.5), sol -> sol.p_c[:die], (0.0, 2.0), "\$/diesel mile", :brown, "Diesel Consumer Price",
     ""; vlines=vlines_data))
-
-
-display(plot_feedstock_prices_by_policy(results_extended_analysis; vlines=vlines_data))
-
 
 
 # ── Dual variables ─────────────────────────────────────────────────────────
@@ -1170,3 +1252,351 @@ end
 display(plot_policy_specific_duals(results_extended_analysis; vlines=vlines_data))
 
 
+# $ per mile price changes relative to status quo
+# $ per mile price changes relative to status quo
+function plot_mile_price_changes_by_policy(results_extended_analysis; vlines=nothing)
+    solutions = results_extended_analysis.solutions
+    sq = solutions[:statusquo]
+    sq_avi = sq.p_c[:avi]
+    sq_gas = sq.p_c[:gas]
+    sq_die = sq.p_c[:die]
+    series_info = [(:avi, sq_avi, "Aviation RPM", :red),
+        (:gas, sq_gas, "Gasoline VMT", :orange),
+        (:die, sq_die, "Diesel VMT", :green)]
+
+    title_panels = []   # 맨 윗줄: 정책명 4개
+    avi_panels = []     # 가운데 줄: aviation 4개
+    road_panels = []    # 아랫줄: road 4개
+
+    for (policy_type, _, xlabel, title) in POLICIES
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        x_max = ep_6B[policy_type].policy_value
+
+        data = Dict{Symbol,Tuple{Vector{Float64},Vector{Float64}}}()
+        for (key, sq_val, _, _) in series_info
+            xs, ys = Float64[], Float64[]
+            for s in sorted
+                sol = solutions[s]
+                isnothing(sol) && continue
+                xval = get_x(s, policy_type)
+                xval <= x_max || continue
+                push!(xs, xval)
+                push!(ys, (sol.p_c[key] - sq_val) / sq_val * 100)
+            end
+            data[key] = (xs, ys)
+        end
+
+        # 정책명 패널
+        p_title = plot(framestyle=:none, legend=false, grid=false,
+            xlims=(0, 1), ylims=(0, 1))
+        annotate!(p_title, 0.5, 0.4, text(title, :black, :center, 24))
+        push!(title_panels, p_title)
+
+        # aviation 패널 (0~250)
+        p_avi = plot(legend=false, grid=true,
+            xlims=(0, x_max), ylims=(-10, 250),
+            left_margin=8Plots.mm, bottom_margin=4Plots.mm, top_margin=2Plots.mm,
+            guidefontsize=14, tickfontsize=16)
+        for (key, _, _, color) in series_info
+            key == :avi || continue
+            xs, ys = data[key]
+            isempty(xs) && continue
+            plot!(p_avi, xs, ys, linewidth=2.5, color=color)
+        end
+        hline!(p_avi, [0], color=:gray, linestyle=:dot, linewidth=1, label="")
+        annotate!(p_avi, x_max * 0.03, 250 * 0.95, text("%", :black, :left, 15))
+        add_vlines!(p_avi, policy_type, vlines; annotate_y=240)
+        push!(avi_panels, p_avi)
+
+        # road 패널 (0~25), x축 라벨은 여기(맨 아래)에만
+        p_road = plot(xlabel=xlabel, legend=false, grid=true,
+            xlims=(0, x_max), ylims=(-2, 25),
+            left_margin=8Plots.mm, bottom_margin=10Plots.mm, top_margin=2Plots.mm,
+            guidefontsize=14, tickfontsize=16)
+        for (key, _, _, color) in series_info
+            key in (:gas, :die) || continue
+            xs, ys = data[key]
+            isempty(xs) && continue
+            plot!(p_road, xs, ys, linewidth=2.5, color=color)
+        end
+        hline!(p_road, [0], color=:gray, linestyle=:dot, linewidth=1, label="")
+        annotate!(p_road, x_max * 0.03, 25 * 0.95, text("%", :black, :left, 15))
+        add_vlines!(p_road, policy_type, vlines; annotate_y=24)
+        push!(road_panels, p_road)
+    end
+
+    # 3행 × 4열: 정책명 / aviation / road
+    all_panels = vcat(title_panels, avi_panels, road_panels)
+    main = plot(all_panels..., layout=grid(3, 4, heights=[0.08, 0.46, 0.46]))
+
+    leg_items = [(lbl, color) for (_, _, lbl, color) in series_info]
+    p_leg = make_legend_panel(leg_items, ncols=3, fontsize=15)
+
+    return plot(main, p_leg,
+        layout=grid(2, 1, heights=[0.94, 0.06]),
+        size=(1500, 1000),
+    )
+end
+
+display(plot_mile_price_changes_by_policy(results_extended_analysis; vlines=vlines_data))
+
+# Food quantity stacked plots
+function plot_food_products_stacked_by_policy(results_extended_analysis; vlines=nothing)
+    solutions = results_extended_analysis.solutions
+
+    CORN_YMAX = 12.0
+    OIL_YMAX = 17.0
+    MEAL_YMAX = 100.0
+
+    panels = []
+    for (policy_type, _, xlabel, title) in POLICIES
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        x_max = ep_6B[policy_type].policy_value
+
+        xs = Float64[]
+        corn_food = Float64[]
+        corn_total = Float64[]
+        soy_oil = Float64[]
+        soy_meal = Float64[]
+        for s in sorted
+            sol = solutions[s]
+            isnothing(sol) && continue
+            xval = get_x(s, policy_type)
+            xval <= x_max || continue
+            ddgs = 0.092 * sol.q[:ethanol] +
+                   0.159 * (sol.q[:saf_atj_conv] + sol.q[:saf_atj_cs])
+            push!(xs, xval)
+            push!(corn_total, sol.x[:corn])
+            push!(corn_food, sol.x[:corn] - ddgs)
+            push!(soy_oil, sol.x[:soyoil])
+            push!(soy_meal, sol.x[:soymeal])
+        end
+
+        common_kw = (xlabel=xlabel, legend=false, grid=true,
+            xlims=(0, x_max),
+            left_margin=2Plots.mm, right_margin=0Plots.mm,
+            top_margin=16Plots.mm, bottom_margin=9Plots.mm,
+            guidefontsize=13, tickfontsize=11)
+
+        p_c = plot(; ylims=(0, CORN_YMAX), common_kw...)
+        plot!(p_c, xs, corn_food, fillrange=0, fillalpha=0.85,
+            fillcolor=:orange, linewidth=1.2, color=:orange)
+        plot!(p_c, xs, corn_total, fillrange=corn_food, fillalpha=0.85,
+            fillcolor=:red, linewidth=1.2, color=:red)
+        annotate!(p_c, x_max * 0.03, CORN_YMAX * 0.99, text("B bu", :black, :left, 11))
+        add_vlines!(p_c, policy_type, vlines; annotate_y=CORN_YMAX * 0.96)
+
+        p_o = plot(; ylims=(0, OIL_YMAX), title=title,
+            titlefontsize=20, titlefontweight=:bold, common_kw...)
+        plot!(p_o, xs, soy_oil, fillrange=0, fillalpha=0.85,
+            fillcolor=:darkgreen, linewidth=1.2, color=:darkgreen)
+        annotate!(p_o, x_max * 0.03, OIL_YMAX * 0.99, text("B lbs", :black, :left, 11))
+        add_vlines!(p_o, policy_type, vlines; annotate_y=OIL_YMAX * 0.96)
+
+        p_m = plot(; ylims=(0, MEAL_YMAX), common_kw...)
+        plot!(p_m, xs, soy_meal, fillrange=0, fillalpha=0.85,
+            fillcolor=:brown, linewidth=1.2, color=:brown)
+        annotate!(p_m, x_max * 0.03, MEAL_YMAX * 0.99, text("MMT", :black, :left, 11))
+        add_vlines!(p_m, policy_type, vlines; annotate_y=MEAL_YMAX * 0.96)
+
+        push!(panels, p_c, p_o, p_m)
+    end
+
+    leg_items = [("Corn for food", :orange), ("DDGS (corn)", :red),
+        ("Soybean oil", :darkgreen), ("Soybean meal", :brown)]
+    p_leg = make_legend_panel(leg_items, ncols=4, fontsize=15)
+
+    # 정책 3패널 사이에 좁은 spacer 열
+    sp() = plot(framestyle=:none, legend=false, grid=false,
+        xlims=(0, 1), ylims=(0, 1))
+
+    top_row = [panels[1], panels[2], panels[3], sp(),
+        panels[4], panels[5], panels[6]]
+    bot_row = [panels[7], panels[8], panels[9], sp(),
+        panels[10], panels[11], panels[12]]
+    all_panels = vcat(top_row, bot_row)
+
+    w = 0.155
+    sw = 0.03
+    col_widths = [w, w, w, sw, w, w, w]
+    col_widths = col_widths ./ sum(col_widths)
+
+    main = plot(all_panels..., layout=grid(2, 7, widths=col_widths))
+
+    return plot(main, p_leg,
+        layout=grid(2, 1, heights=[0.92, 0.08]),
+        size=(2400, 1350),
+        left_margin=5Plots.mm, right_margin=8Plots.mm,
+        top_margin=13Plots.mm, bottom_margin=16Plots.mm)
+end
+
+p_food = plot_food_products_stacked_by_policy(results_extended_analysis; vlines=vlines_data)
+display(p_food)
+savefig(p_food, joinpath(OUTPUT_DIR, "quantity_food.png"))
+
+
+# 3B summary table
+
+function summarize_3B_table(results_extended_analysis, ep_3B)
+    solutions = results_extended_analysis.solutions
+    sq = solutions[:statusquo]
+
+    SAF_GOODS = [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    SAF_LABELS = Dict(
+        :saf_atj_conv => "ATJ_conv", :saf_atj_cs => "ATJ_cs",
+        :saf_hefa_conv => "HEFA_conv", :saf_hefa_cs => "HEFA_cs",
+        :saf_hefa_nonsoy => "HEFA_nonsoy")
+
+    sq_jet = sq.q[:jet_fuel]
+    sq_saf = sum(sq.q[g] for g in SAF_GOODS)
+    sq_rpm = sq.x[:avi]
+
+    # 3B 지점 시나리오 찾기 (policy_value에 가장 가까운 시나리오)
+    function nearest_scenario(policy_type, target)
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        best, best_d = nothing, Inf
+        for s in sorted
+            isnothing(solutions[s]) && continue
+            d = abs(get_x(s, policy_type) - target)
+            d < best_d && (best_d=d; best=s)
+        end
+        return best
+    end
+
+    # SAF가 처음 도입되는(총량 > 임계) 정책 수준
+    function first_saf_level(policy_type; thresh=1e-4)
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        for s in sorted
+            sol = solutions[s]
+            isnothing(sol) && continue
+            sum(sol.q[g] for g in SAF_GOODS) > thresh && return get_x(s, policy_type)
+        end
+        return NaN
+    end
+
+    # 열 구성
+    df = DataFrame(
+        policy=String[],
+        stringency_3B=Float64[],
+        jet_sq=Float64[], jet_3B=Float64[],
+        jet_abs_change=Float64[], jet_pct_change=Float64[],
+        rpm_change=Float64[],
+        saf_total_3B=Float64[], saf_abs_change=Float64[],
+    )
+    # 종류별 갤런, 종류별 share(%) 열 추가
+    for g in SAF_GOODS
+        df[!, Symbol("q_" * SAF_LABELS[g])] = Float64[]
+    end
+    for g in SAF_GOODS
+        df[!, Symbol("share_" * SAF_LABELS[g])] = Float64[]
+    end
+    df[!, :first_saf_level] = Float64[]
+
+    for (policy_type, _, _, title) in POLICIES
+        target = ep_3B[policy_type].policy_value
+        s = nearest_scenario(policy_type, target)
+        isnothing(s) && continue
+        sol = solutions[s]
+
+        jet = sol.q[:jet_fuel]
+        saf_by = [sol.q[g] for g in SAF_GOODS]
+        saf_total = sum(saf_by)
+
+        jet_pct = sq_jet > 0 ? (jet - sq_jet) / sq_jet * 100 : NaN
+        rpm_pct = sq_rpm > 0 ? (sol.x[:avi] - sq_rpm) / sq_rpm * 100 : NaN
+
+        # 종류별 share: SAF 총량 대비 %
+        shares = saf_total > 1e-8 ? [q / saf_total * 100 for q in saf_by] : fill(0.0, length(saf_by))
+
+        row = Any[title, get_x(s, policy_type),
+            sq_jet, jet, jet-sq_jet, jet_pct,
+            rpm_pct,
+            saf_total, saf_total-sq_saf]
+        append!(row, saf_by)      # 종류별 갤런
+        append!(row, shares)      # 종류별 share
+        push!(row, first_saf_level(policy_type))
+        push!(df, row)
+    end
+
+    return df
+end
+
+df_3B = summarize_3B_table(results_extended_analysis, ep_3B)
+show(df_3B, allcols=true, allrows=true)
+println()
+
+using CSV
+CSV.write(joinpath(OUTPUT_DIR, "summary_3B.csv"), df_3B)
+
+# RFS when non soy HEFA-SAF is first introduced
+function first_nonsoy_hefa_level(results_extended_analysis; thresh=1e-6)
+    solutions = results_extended_analysis.solutions
+    sorted = sort_scenarios(results_extended_analysis.scenario_groups[:rfs])
+    for s in sorted
+        sol = solutions[s]
+        isnothing(sol) && continue
+        if sol.q[:saf_hefa_nonsoy] > thresh
+            return get_x(s, :rfs)
+        end
+    end
+    return NaN
+end
+
+θ_first = first_nonsoy_hefa_level(results_extended_analysis)
+println("Non-soy HEFA SAF 최초 등장 θ_avi = ", θ_first)
+
+function first_saf_by_type_lcfs(results_extended_analysis; thresh=1e-6)
+    solutions = results_extended_analysis.solutions
+    sorted = sort_scenarios(results_extended_analysis.scenario_groups[:lcfs])
+    SAF_GOODS = [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+
+    onset = Dict(g => NaN for g in SAF_GOODS)
+    for s in sorted
+        sol = solutions[s]
+        isnothing(sol) && continue
+        σ = get_x(s, :lcfs)
+        for g in SAF_GOODS
+            isnan(onset[g]) && sol.q[g] > thresh && (onset[g] = σ)
+        end
+    end
+
+    # σ 오름차순 정렬 (등장 안 한 종류는 뒤로)
+    ranked = sort(collect(onset), by=x -> isnan(x[2]) ? Inf : x[2])
+    println("LCFS SAF 종류별 최초 등장 σ:")
+    for (g, σ) in ranked
+        println("  ", g, " => ", isnan(σ) ? "미도입" : σ)
+    end
+    return ranked
+end
+
+ranked = first_saf_by_type_lcfs(results_extended_analysis)
+first_type = ranked[1]
+println("\n가장 먼저 등장하는 SAF: ", first_type[1], " (σ = ", first_type[2], ")")
+
+function find_max_social_welfare(results_extended_analysis)
+    welfare_summary = results_extended_analysis.welfare_summary
+
+    println("각 정책의 Social Welfare 최대 지점:\n")
+    results = Dict()
+    for (policy_type, _, _, title) in POLICIES
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+
+        best_s, best_sw, best_x = nothing, -Inf, NaN
+        for s in sorted
+            haskey(welfare_summary, s) || continue
+            sw = welfare_summary[s].social_welfare
+            if sw > best_sw
+                best_sw = sw
+                best_s = s
+                best_x = get_x(s, policy_type)
+            end
+        end
+
+        results[policy_type] = (scenario=best_s, stringency=best_x, social_welfare=best_sw)
+        @printf("%-12s: stringency = %.4f,  social welfare = %.4f\n",
+            title, best_x, best_sw)
+    end
+    return results
+end
+
+max_sw = find_max_social_welfare(results_extended_analysis)
