@@ -71,10 +71,10 @@ function create_policy_scenarios()
             (t=0.0, θ_avi=Float64(θ), σ=0.0, p=0.0, use_ci_threshold=true, recognize_cs=true)
     end
     # ── 추가: use_ci_threshold=false 인 RFS ──
-    #for θ in POLICY_RANGES.θ_avi
-    #    scenarios[Symbol("rfsnoci_$(round(Int, θ*1000))")] =
-    #        (t=0.0, θ_avi=Float64(θ), σ=0.0, p=0.0, use_ci_threshold=false, recognize_cs=true)
-    #end
+    for θ in POLICY_RANGES.θ_avi
+        scenarios[Symbol("rfsnoci_$(round(Int, θ*1000))")] =
+            (t=0.0, θ_avi=Float64(θ), σ=0.0, p=0.0, use_ci_threshold=false, recognize_cs=true)
+    end
     for σ in POLICY_RANGES.σ
         scenarios[Symbol("lcfs_$(round(Int, σ*1000))")] =
             (t=0.0, θ_avi=0.0, σ=Float64(σ), p=0.0, use_ci_threshold=false, recognize_cs=true)
@@ -145,7 +145,7 @@ function calculate_extended_welfare_analysis(solutions, policy_configs, params; 
         scenario_groups=(
             carbontax=[k for k in keys(valid) if startswith(String(k), "carbontax_")],
             rfs=[k for k in keys(valid) if startswith(String(k), "rfs_")],
-            #rfsnoci=[k for k in keys(valid) if startswith(String(k), "rfsnoci_")],
+            rfsnoci=[k for k in keys(valid) if startswith(String(k), "rfsnoci_")],
             lcfs=[k for k in keys(valid) if startswith(String(k), "lcfs_")],
             taxcredit=[k for k in keys(valid) if startswith(String(k), "taxcredit_")],
         )
@@ -252,10 +252,10 @@ function plot_mac_comparison_simple(results_extended_analysis, mac_extended;
     max_ab = 0.105
     bg = RGB(0.96, 0.96, 0.94)
     policy_colors = [(:carbontax, :blue), (:rfs, :red),
-        #(:rfsnoci, :orange),
+        (:rfsnoci, :orange),
         (:lcfs, :green), (:taxcredit, :purple)]
     policy_labels = Dict(:carbontax => "Carbon Tax", :rfs => "RFS Aviation",
-        #:rfsnoci => "RFS Aviation (no CI)",
+        :rfsnoci => "RFS Aviation (no CI)",
         :lcfs => "LCFS", :taxcredit => "Tax Credit")
     # collect plot data
     plot_data = Dict()
