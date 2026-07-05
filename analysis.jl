@@ -494,6 +494,7 @@ function calculate_total_welfare(cs_changes, ps_land_changes, gr_changes, env_be
         env = env_benefits[s].total_benefit
         welfare_summary[s] = (
             cs_change=clean_small(cs),
+            cs_by_sector=cs_changes[s],
             ps_land_change=clean_small(ps),
             gr_change=clean_small(gr),
             env_benefit=clean_small(env),

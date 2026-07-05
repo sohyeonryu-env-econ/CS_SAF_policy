@@ -178,7 +178,7 @@ end
 # =================================================================================
 
 function plot_mac_panels(results_by_elasticity, elasticities;
-    use_social=true, max_ab=0.13, y_min=-250.0, y_max=2200.0,
+    use_social=true, max_ab=0.11, y_min=-250.0, y_max=900.0,
     fig_size=(2400, 1000))
 
     bg = RGB(0.96, 0.96, 0.94)
@@ -410,7 +410,7 @@ function plot_share_and_rpm_stacked(results_by_elasticity, elasticities; fig_siz
         pt == :rfs ? config.θ_avi :
         pt == :lcfs ? config.σ : config.p
     end
-    saf_share(sol) = r_jet * β_saf * sum(sol.q[g] for g in SAF_GOODS) / sol.x[:avi]
+    saf_share(sol) = 100 * r_jet * β_saf * sum(sol.q[g] for g in SAF_GOODS) / sol.x[:avi]
 
     # RPM 공통 범위
     rpm_min, rpm_max = Inf, -Inf
@@ -441,7 +441,7 @@ function plot_share_and_rpm_stacked(results_by_elasticity, elasticities; fig_siz
         # 윗줄: SAF share
         p_s = plot(ylabel=show_y ? "SAF blend share (%)" : "", title=ptitle,
             titlefontsize=21, titlefontweight=:bold,
-            legend=false, grid=true, ylims=(-0.1, 1.0), xticks=:none,
+            legend=false, grid=true, ylims=(-5, 100), xticks=:none,
             left_margin=show_y ? 16Plots.mm : 4Plots.mm,
             bottom_margin=2Plots.mm, top_margin=8Plots.mm, right_margin=8Plots.mm,
             guidefontsize=20, tickfontsize=16)
@@ -484,3 +484,113 @@ end
 
 println("\n=== Plotting share + RPM stacked ===")
 display(plot_share_and_rpm_stacked(results_by_elasticity, ELASTICITIES))
+
+function plot_share_rpm_mac_stacked(results_by_elasticity, elasticities;
+    use_social=true, max_ab=0.11, mac_ymin=-250.0, mac_ymax=900.0,
+    fig_size=(2200, 1650))
+
+    SAF_GOODS = [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    r_jet = params.coeff.r[:jet_fuel]
+    β_saf = params.coeff.beta[(:saf, :jet_fuel)]
+
+    policy_meta = [
+        (:carbontax, "Carbon Tax (\$/ton CO₂e)", "Carbon Tax"),
+        (:rfs, "RFS Aviation Mandate (θ_avi)", "RFS Aviation"),
+        (:lcfs, "LCFS Standard (σ)", "LCFS"),
+        (:taxcredit, "Tax Credit (\$/gallon)", "Tax Credit"),
+    ]
+    ela_colors = Dict(elasticities[1] => :black,
+        elasticities[2] => :dodgerblue,
+        elasticities[3] => :crimson)
+
+    mac_key = use_social ? :mac_social : :mac_private
+    mac_xlabel = "Abatement (M ton CO₂eq)"
+
+    function get_policy_x(config, pt)
+        pt == :carbontax ? config.t :
+        pt == :rfs ? config.θ_avi :
+        pt == :lcfs ? config.σ : config.p
+    end
+    saf_share(sol) = 100 * r_jet * β_saf * sum(sol.q[g] for g in SAF_GOODS) / sol.x[:avi]
+
+    function series(pt, σ_avi, valfn)
+        res = results_by_elasticity[σ_avi]
+        slist = [s for s in keys(res.solutions)
+                       if startswith(String(s), String(pt)*"_") && !isnothing(res.solutions[s])]
+        isempty(slist) && return (Float64[], Float64[])
+        xv = [get_policy_x(POLICY_MATRIX_SENS[s], pt) for s in slist]
+        idx = sortperm(xv)
+        slist, xv = slist[idx], xv[idx]
+        return xv, [valfn(res.solutions[s]) for s in slist]
+    end
+
+    top, mid, bot = [], [], []
+    for (pt, xlabel, ptitle) in policy_meta
+        show_y = pt == :carbontax
+
+        # 1행 SAF share
+        p_s = plot(xlabel=xlabel, ylabel=show_y ? "SAF blend share (%)" : "", title=ptitle,
+            titlefontsize=21, titlefontweight=:bold,
+            legend=false, grid=true, ylims=(-5, 100),
+            left_margin=show_y ? 16Plots.mm : 4Plots.mm,
+            bottom_margin=13Plots.mm, top_margin=8Plots.mm, right_margin=8Plots.mm,
+            guidefontsize=18, tickfontsize=15)
+        for σ_avi in elasticities
+            xv, yv = series(pt, σ_avi, saf_share)
+            isempty(xv) && continue
+            plot!(p_s, xv, yv, linewidth=2.8, color=ela_colors[σ_avi])
+        end
+        push!(top, p_s)
+
+        # 2행 total RPM
+        p_r = plot(xlabel=xlabel, ylabel=show_y ? "Total RPM (billion miles)" : "",
+            legend=false, grid=true, ylims=(0, 1380),
+            left_margin=show_y ? 16Plots.mm : 4Plots.mm,
+            bottom_margin=13Plots.mm, top_margin=6Plots.mm, right_margin=8Plots.mm,
+            guidefontsize=18, tickfontsize=15)
+        for σ_avi in elasticities
+            xv, yv = series(pt, σ_avi, sol -> sol.x[:avi])
+            isempty(xv) && continue
+            plot!(p_r, xv, yv, linewidth=2.8, color=ela_colors[σ_avi])
+        end
+        push!(mid, p_r)
+
+        # 3행 MAC (저감량 백만 톤 단위)
+        p_m = plot(xlabel=mac_xlabel,
+            ylabel=show_y ? "MAC (\$/ton CO₂)" : "",
+            legend=false, grid=true,
+            xlims=(0, max_ab*1000), ylims=(mac_ymin, mac_ymax),
+            yticks=collect(-200:200.0:mac_ymax),
+            left_margin=show_y ? 16Plots.mm : 4Plots.mm,
+            bottom_margin=16Plots.mm, top_margin=6Plots.mm, right_margin=8Plots.mm,
+            guidefontsize=18, tickfontsize=15)
+        for σ_avi in elasticities
+            res = results_by_elasticity[σ_avi]
+            sq_em = res.sq_em
+            data = pt in [:taxcredit, :lcfs] ? res.mac[pt][1:end] : res.mac[pt]
+            ab = [(sq_em - d.emission)*1000 for d in data if sq_em - d.emission <= max_ab]
+            val = [getfield(d, mac_key) for d in data if sq_em - d.emission <= max_ab]
+            isempty(ab) && continue
+            idx = sortperm(ab)
+            plot!(p_m, ab[idx], val[idx], linewidth=2.8, color=ela_colors[σ_avi])
+        end
+        hline!(p_m, [0], color=:gray, linestyle=:dot, linewidth=2.0, alpha=0.8)
+        push!(bot, p_m)
+    end
+
+    p_leg = plot(legend=:top, legendcolumns=3, grid=false, showaxis=false,
+        ticks=false, xlims=(0, 1), ylims=(0, 1), framestyle=:none,
+        legendfontsize=18, background_color=:white)
+    for σ_avi in elasticities
+        plot!(p_leg, [NaN], [NaN], label="ε = $(σ_avi)", linewidth=3, color=ela_colors[σ_avi])
+    end
+
+    return plot(
+        plot(vcat(top, mid, bot)..., layout=grid(3, 4)),
+        p_leg, layout=grid(2, 1, heights=[0.95, 0.05]),
+        size=fig_size,
+        background_color=:white)
+end
+
+println("\n=== Plotting share + RPM + MAC stacked ===")
+display(plot_share_rpm_mac_stacked(results_by_elasticity, ELASTICITIES; use_social=true))
