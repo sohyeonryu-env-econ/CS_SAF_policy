@@ -37,7 +37,7 @@ welfare_base = display_comparison_tables(results_base, params, policy_configs_ba
     title="Status quo and First Best Carbon Tax RESULTS")
 
 @save joinpath(OUTPUT_DIR, "results_base.jld2") results_base policy_configs_base welfare_base
-println("✓ Saved results_base.jld2")
+
 
 # =================================================================================
 # 2. Policies that achieve the same GHG emissions as XX B gallon target RFS
@@ -46,7 +46,7 @@ println("✓ Saved results_base.jld2")
 function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.0001)
     SAF_GOODS = [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
 
-    # ── Step 1: RFS로 target SAF 달성 → target emissions 계산 ──
+    # Step 1: RFS target SAF → calculate the target emissions
     println("\n── Step 1: Finding RFS θ_avi for target SAF = $(target_saf)B ──")
     low, high = 0.0, 1.0
     rfs_result = nothing
@@ -65,13 +65,13 @@ function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.00
         total_saf < target_saf ? (low = mid) : (high = mid)
     end
 
-    # RFS solution에서 target emissions 추출
+    # Find target emissions from the RFS solution
     rfs_sol = extract_solution(rfs_result.model, :rfs)
     rfs_emissions = calculate_emissions_detail(rfs_sol, params)
     target_emissions = rfs_emissions.total
     println("  → Target emissions = $(round(target_emissions, digits=6)) B ton CO2e")
 
-    # ── Step 2: 나머지 정책에서 target emissions 달성하는 stringency 찾기 ──
+    # Step 2: Find the stringency for each remaining policy that achieves the target emissions
     search_ranges = Dict(
         :carbontax => (0.0, 1500.0),
         :lcfs => (0.0, 1.0),
@@ -108,7 +108,6 @@ function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.00
             best_result = (policy_value=mid, model=model, actual_emission=total_em, config=config)
             abs(total_em - target_emissions) < tolerance && (println("  ✓ Converged"); break)
 
-            # emissions은 stringency 높을수록 감소
             total_em > target_emissions ? (low = mid) : (high = mid)
         end
 
@@ -118,6 +117,7 @@ function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.00
     return equivalent_policies, target_emissions
 end
 
+# Find equivalent policies for different target SAF levels
 for target_saf in [3.0, 6.0]
     suffix = target_saf == 3.0 ? "" : "_$(Int(target_saf))"
 
