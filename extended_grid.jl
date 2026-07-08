@@ -72,7 +72,7 @@ begin
         scenarios = Dict()
         for t in POLICY_RANGES.t
             scenarios[Symbol("carbontax_$(round(Int,t))")] =
-                (t=Float64(t), θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation, use_ci_threshold=false, recognize_cs=true)
+                (t=Float64(t), θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation, use_ci_threshold=true, recognize_cs=true)
         end
         for θ in POLICY_RANGES.θ_avi
             scenarios[Symbol("rfs_$(round(Int, θ*1000))")] =
@@ -349,6 +349,7 @@ function results_to_dataframe(extended_analysis, policy_configs, mac_extended)
 
     for (name, sol) in solutions
         isnothing(sol) && continue
+        starswith(String(name), "rfsnoci_") && continue
         config = policy_configs[name]
         str = String(name)
         ptype = occursin("carbontax", str) ? "carbontax" :
@@ -1146,3 +1147,618 @@ function plot_policy_specific_duals(results_extended_analysis; vlines=nothing)
 end
 
 display(plot_policy_specific_duals(results_extended_analysis; vlines=vlines_data))
+
+# Mile prices by policy, % changes
+function plot_price_paired_2x2(results_extended_analysis; vlines=nothing)
+    solutions = results_extended_analysis.solutions
+    sq = solutions[:statusquo]
+
+    avi_color = RGB(0.84, 0.19, 0.15)
+    gas_color = RGB(0.90, 0.62, 0.0)
+    die_color = RGB(0.13, 0.54, 0.13)
+
+    # y max
+    avi_ymax = Dict(:carbontax => 250.0, :rfs => 250.0, :lcfs => 250.0, :taxcredit => 250.0)
+    road_ymax = Dict(:carbontax => 25.0, :rfs => 25.0, :lcfs => 25.0, :taxcredit => 25.0)
+
+    # x max
+    xmax_map = Dict(pt => ep_6B[pt].policy_value for pt in [:carbontax, :rfs, :lcfs, :taxcredit])
+    xmin_map = Dict(:carbontax => 0.0, :rfs => 0.0, :lcfs => 0.0, :taxcredit => 0.0)
+
+    pct(f, sol, base) = (f(sol) - base) / base * 100
+
+    # vline
+    function add_vl!(pp, policy_type, xlims_cur, ymax; fontsize=13)
+        (isnothing(vlines) || !haskey(vlines, policy_type)) && return
+        vcolors = [RGB(0.55, 0.0, 0.0), RGB(0.0, 0.0, 0.55)]
+        for (j, (xval, vlabel)) in enumerate(vlines[policy_type])
+            (xlims_cur[1] <= xval <= xlims_cur[2]) || continue
+            c = vcolors[min(j, 2)]
+            vline!(pp, [xval], color=c, linestyle=:dash, linewidth=1.6, label="")
+            annotate!(pp, xval, ymax * 0.95,
+                text(vlabel, c, :center, fontsize))
+        end
+    end
+
+    # Aviation
+    function make_avi_panel(policy_type, xlabel, title, show_ylabel)
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        xlims_cur = (xmin_map[policy_type], xmax_map[policy_type])
+        valid = [s for s in sorted if !isnothing(solutions[s]) &&
+                                      xlims_cur[1] <= get_x(s, policy_type) <= xlims_cur[2]]
+        xs = [get_x(s, policy_type) for s in valid]
+        idx = sortperm(xs)
+        xs = xs[idx]
+
+        base_avi = sq.p_c[:avi]
+        rpm = [pct(s -> s.p_c[:avi], solutions[v], base_avi) for v in valid][idx]
+        ymax_a = avi_ymax[policy_type]
+
+        p = plot(legend=false, grid=false, title=title,
+            titlefontsize=22, titlefontweight=:bold,
+            ylims=(-ymax_a * 0.04, ymax_a), xlims=xlims_cur, framestyle=:axes,
+            ylabel=show_ylabel ? "%" : "",
+            guidefontsize=25, tickfontsize=16,
+            left_margin=show_ylabel ? 14Plots.mm : 4Plots.mm,
+            right_margin=8Plots.mm, bottom_margin=4Plots.mm, top_margin=6Plots.mm)
+        plot!(p, xs, rpm, linewidth=4.0, color=avi_color, label="")
+        add_vl!(p, policy_type, xlims_cur, ymax_a)
+        return p
+    end
+
+    # Road
+    function make_road_panel(policy_type, xlabel, show_ylabel)
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        xlims_cur = (xmin_map[policy_type], xmax_map[policy_type])
+        valid = [s for s in sorted if !isnothing(solutions[s]) &&
+                                      xlims_cur[1] <= get_x(s, policy_type) <= xlims_cur[2]]
+        xs = [get_x(s, policy_type) for s in valid]
+        idx = sortperm(xs)
+        xs = xs[idx]
+
+        base_gas = sq.p_c[:gas]
+        base_die = sq.p_c[:die]
+        gasv = [pct(s -> s.p_c[:gas], solutions[v], base_gas) for v in valid][idx]
+        diev = [pct(s -> s.p_c[:die], solutions[v], base_die) for v in valid][idx]
+        ymax_r = road_ymax[policy_type]
+
+        p = plot(legend=false, grid=false,
+            ylims=(-ymax_r * 0.04, ymax_r), xlims=xlims_cur, framestyle=:axes,
+            xlabel=xlabel, ylabel=show_ylabel ? "%" : "",
+            guidefontsize=25, tickfontsize=16,
+            left_margin=show_ylabel ? 14Plots.mm : 4Plots.mm,
+            right_margin=8Plots.mm, bottom_margin=14Plots.mm, top_margin=6Plots.mm)
+        plot!(p, xs, gasv, linewidth=4.0, color=gas_color, label="")
+        plot!(p, xs, diev, linewidth=4.0, color=die_color, label="")
+        add_vl!(p, policy_type, xlims_cur, ymax_r)
+        return p
+    end
+
+    # align panels
+    avi_panels = [make_avi_panel(pt, xl, tt, i == 1)
+                  for (i, (pt, _, xl, tt)) in enumerate(POLICIES)]
+    road_panels = [make_road_panel(pt, xl, i == 1)
+                   for (i, (pt, _, xl, _)) in enumerate(POLICIES)]
+
+    body = plot(vcat(avi_panels, road_panels)...,
+        layout=grid(2, 4), size=(2400, 1300))
+
+    leg_items = [("Aviation RPM", avi_color),
+        ("Gasoline VMT", gas_color),
+        ("Diesel VMT", die_color)]
+    p_leg = make_legend_panel(leg_items, ncols=3, fontsize=20)
+
+    return plot(
+        body,
+        p_leg,
+        layout=grid(2, 1, heights=[0.94, 0.06]),
+        size=(2400, 1400),
+        margin=6Plots.mm, background_color=:white)
+end
+
+p_mile_price=(plot_price_paired_2x2(results_extended_analysis; vlines=vlines_data))
+savefig(p_mile_price, joinpath(FIGURE_DIR, "price_miles.png"))
+
+# food quantity
+function plot_food_products_stacked_by_policy(results_extended_analysis; vlines=nothing)
+    solutions = results_extended_analysis.solutions
+
+    # y max
+    CORN_YMAX = 12.0
+    OIL_YMAX = 16.0
+    MEAL_YMAX = 100.0
+
+    # 3 panels
+    function make_block(policy_type, xlabel, title)
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        x_max = ep_6B[policy_type].policy_value
+
+        xs, corn_total, corn_food, soy_oil, soy_meal = Float64[], Float64[], Float64[], Float64[], Float64[]
+        for s in sorted
+            sol = solutions[s]
+            isnothing(sol) && continue
+            xval = get_x(s, policy_type)
+            xval > x_max && continue
+            ddgs = 0.092 * sol.q[:ethanol] +
+                   0.159 * (sol.q[:saf_atj_conv] + sol.q[:saf_atj_cs])
+            push!(xs, xval)
+            push!(corn_total, sol.x[:corn])
+            push!(corn_food, sol.x[:corn] - ddgs)
+            push!(soy_oil, sol.x[:soyoil])
+            push!(soy_meal, sol.x[:soymeal])
+        end
+        idx = sortperm(xs)
+        xs, corn_total, corn_food, soy_oil, soy_meal =
+            xs[idx], corn_total[idx], corn_food[idx], soy_oil[idx], soy_meal[idx]
+
+        # x label only on the middle panel
+        xticks_cur = policy_type == :lcfs ? [0.0, 0.1, 0.2] : :auto
+
+        kw_side = (legend=false, grid=true, xlims=(0, x_max), xticks=xticks_cur,
+            left_margin=8Plots.mm, right_margin=6Plots.mm, bottom_margin=14Plots.mm,
+            guidefontsize=20, tickfontsize=17)
+        kw_mid = (xlabel=xlabel, legend=false, grid=true, xlims=(0, x_max), xticks=xticks_cur,
+            left_margin=8Plots.mm, right_margin=6Plots.mm, bottom_margin=14Plots.mm,
+            guidefontsize=20, tickfontsize=17)
+
+        # Corn
+        p_c = plot(; ylims=(0, CORN_YMAX), kw_side...)
+        plot!(p_c, xs, corn_food, fillrange=0, fillalpha=0.8,
+            fillcolor=:orange, linewidth=1.5, color=:orange)
+        plot!(p_c, xs, corn_total, fillrange=corn_food, fillalpha=0.8,
+            fillcolor=:red, linewidth=1.5, color=:red)
+        annotate!(p_c, x_max * 0.03, CORN_YMAX * 0.95, text("B bu", :black, :left, 15))
+        add_vlines!(p_c, policy_type, vlines; annotate_y=CORN_YMAX * 0.96, fontsize=13)
+
+        # Soybean oil
+        p_o = plot(; ylims=(0, OIL_YMAX), kw_mid...)
+        plot!(p_o, xs, soy_oil, fillrange=0, fillalpha=0.8,
+            fillcolor=:darkgreen, linewidth=1.5, color=:darkgreen)
+        annotate!(p_o, x_max * 0.03, OIL_YMAX * 0.95, text("B lbs", :black, :left, 15))
+        add_vlines!(p_o, policy_type, vlines; annotate_y=OIL_YMAX * 0.96, fontsize=13)
+
+        # Soybean meal
+        p_m = plot(; ylims=(0, MEAL_YMAX), kw_side...)
+        plot!(p_m, xs, soy_meal, fillrange=0, fillalpha=0.8,
+            fillcolor=:brown, linewidth=1.5, color=:brown)
+        annotate!(p_m, x_max * 0.03, MEAL_YMAX * 0.95, text("MMT", :black, :left, 15))
+        add_vlines!(p_m, policy_type, vlines; annotate_y=MEAL_YMAX * 0.96, fontsize=13)
+
+        # title
+        p_title = plot(framestyle=:none, legend=false, grid=false,
+            xlims=(0, 1), ylims=(0, 1),
+            top_margin=0Plots.mm, bottom_margin=0Plots.mm)
+        annotate!(p_title, 0.5, 0.15, text(title, :black, :center, 25))
+
+        return plot(p_title, plot(p_c, p_o, p_m, layout=(1, 3)),
+            layout=grid(2, 1, heights=[0.07, 0.93]))
+    end
+
+    blocks = [make_block(pt, xl, tt) for (pt, _, xl, tt) in POLICIES]
+
+    # align
+    blank = plot(framestyle=:none, legend=false, grid=false, background_color=:white)
+
+    body = plot(
+        blocks[1], blank, blocks[2],
+        blocks[3], blank, blocks[4],
+        layout=grid(2, 3, widths=[0.485, 0.03, 0.485]))
+
+    leg_items = [("Corn for food", :orange), ("DDGS (corn)", :red),
+        ("Soybean oil", :darkgreen), ("Soybean meal", :brown)]
+    p_leg = make_legend_panel(leg_items, ncols=4, fontsize=18)
+
+    return plot(
+        body,
+        p_leg,
+        layout=grid(2, 1, heights=[0.94, 0.06]),
+        size=(2600, 1300),
+        margin=6Plots.mm, background_color=:white)
+end
+
+q_food=plot_food_products_stacked_by_policy(results_extended_analysis; vlines=vlines_data)
+savefig(q_food, joinpath(FIGURE_DIR, "quantity_food.png"))
+
+# feedstock prices
+function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothing)
+    solutions = results_extended_analysis.solutions
+    sq = solutions[:statusquo]
+
+    sq_corn = sq.p_f[:feedstock_corn_n]
+    sq_soy = sq.p_f[:feedstock_soy_n]
+    sq_rent = sq.duals.r_land
+
+    corn_info = [
+        (:feedstock_corn_n, "Corn (Conv)", :darkorange, :solid, true, nothing),
+        (:feedstock_corn_cs, "Corn (CS)", :darkorange, :dash, false, :corn_cs),
+    ]
+    soyoil_info = [
+        (:feedstock_soy_n, "Soyoil (Conv)", :darkgreen, :solid, true, nothing),
+        (:feedstock_soy_cs, "Soyoil (CS)", :darkgreen, :dash, false, :soy_cs),
+    ]
+
+    # y max
+    function row_ylims(info, sq_base)
+        vals = Float64[]
+        for (policy_type, _, _, _) in POLICIES
+            sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+            x_max = ep_6B[policy_type].policy_value
+            for s in sorted
+                sol = solutions[s]
+                isnothing(sol) && continue
+                get_x(s, policy_type) <= x_max || continue
+                for (key, _, _, _, _, cs_key) in info
+                    isnothing(cs_key) || sol.q_feedstock[cs_key] > 1e-6 || continue
+                    push!(vals, (sol.p_f[key] - sq_base) / sq_base * 100)
+                end
+            end
+        end
+        lo, hi = minimum(vals), maximum(vals)
+        pad = (hi - lo) * 0.08
+        return (min(0.0, lo - pad), hi + pad)
+    end
+
+    function rent_ylims()
+        vals = Float64[]
+        for (policy_type, _, _, _) in POLICIES
+            sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+            x_max = ep_6B[policy_type].policy_value
+            for s in sorted
+                sol = solutions[s]
+                isnothing(sol) && continue
+                get_x(s, policy_type) <= x_max || continue
+                push!(vals, (sol.duals.r_land - sq_rent) / sq_rent * 100)
+            end
+        end
+        lo, hi = minimum(vals), maximum(vals)
+        pad = (hi - lo) * 0.08
+        return (min(0.0, lo - pad), hi + pad)
+    end
+
+    corn_yl = row_ylims(corn_info, sq_corn)
+    soy_yl = row_ylims(soyoil_info, sq_soy)
+    rent_yl = rent_ylims()
+
+    # feedstock 
+    function make_feedstock_panels(info, sq_base, ylabel_text, yl; show_title, show_xlabel)
+        panels = []
+        for (col, (policy_type, _, xlabel, title)) in enumerate(POLICIES)
+            sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+            x_max = ep_6B[policy_type].policy_value
+
+            p = plot(
+                title=show_title ? title : "",
+                titlefontsize=30, titlefontweight=:bold,
+                ylabel=col == 1 ? ylabel_text : "",
+                xlabel=show_xlabel ? xlabel : "",
+                legend=false, grid=true,
+                xlims=(0, x_max), ylims=yl,
+                xticks=(policy_type == :lcfs ? [0.0, 0.1, 0.2] : :auto),
+                left_margin=col == 1 ? 22Plots.mm : 4Plots.mm,
+                bottom_margin=show_xlabel ? 14Plots.mm : 3Plots.mm,
+                top_margin=show_title ? 10Plots.mm : 2Plots.mm,
+                guidefontsize=26, tickfontsize=20)
+
+            for (key, _, color, lstyle, _, cs_key) in info
+                xs, ps = Float64[], Float64[]
+                for s in sorted
+                    sol = solutions[s]
+                    isnothing(sol) && continue
+                    xval = get_x(s, policy_type)
+                    xval <= x_max || continue
+                    isnothing(cs_key) || sol.q_feedstock[cs_key] > 1e-6 || continue
+                    push!(xs, xval)
+                    push!(ps, (sol.p_f[key] - sq_base) / sq_base * 100)
+                end
+                isempty(xs) && continue
+                idx = sortperm(xs)
+                plot!(p, xs[idx], ps[idx], linewidth=3, color=color, linestyle=lstyle)
+            end
+            hline!(p, [0], color=:gray, linestyle=:dot, linewidth=1, label="")
+            add_vlines!(p, policy_type, vlines; annotate_y=yl[2] * 0.93, fontsize=15)
+            push!(panels, p)
+        end
+        return panels
+    end
+
+    # land rent 
+    function make_rent_panels()
+        panels = []
+        for (col, (policy_type, _, xlabel, _)) in enumerate(POLICIES)
+            sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+            x_max = ep_6B[policy_type].policy_value
+
+            p = plot(
+                title="",
+                ylabel=col == 1 ? "% change (Land rent)" : "",
+                xlabel=xlabel,
+                legend=false, grid=true,
+                xlims=(0, x_max), ylims=rent_yl,
+                xticks=(policy_type == :lcfs ? [0.0, 0.1, 0.2] : :auto),
+                left_margin=col == 1 ? 22Plots.mm : 4Plots.mm,
+                bottom_margin=14Plots.mm, top_margin=2Plots.mm,
+                guidefontsize=26, tickfontsize=20)
+
+            xs, ps = Float64[], Float64[]
+            for s in sorted
+                sol = solutions[s]
+                isnothing(sol) && continue
+                xval = get_x(s, policy_type)
+                xval <= x_max || continue
+                push!(xs, xval)
+                push!(ps, (sol.duals.r_land - sq_rent) / sq_rent * 100)
+            end
+            idx = sortperm(xs)
+            plot!(p, xs[idx], ps[idx], linewidth=3, color=:black)
+            hline!(p, [0], color=:gray, linestyle=:dot, linewidth=1, label="")
+            add_vlines!(p, policy_type, vlines; annotate_y=rent_yl[2] * 0.93, fontsize=15)
+            push!(panels, p)
+        end
+        return panels
+    end
+
+    # label
+    corn_panels = make_feedstock_panels(corn_info, sq_corn, "% change (Corn)", corn_yl;
+        show_title=true, show_xlabel=false)
+    soy_panels = make_feedstock_panels(soyoil_info, sq_soy, "% change (Soyoil)", soy_yl;
+        show_title=false, show_xlabel=false)
+    rent_panels = make_rent_panels()
+
+    all_panels = vcat(corn_panels, soy_panels, rent_panels)
+
+    leg_items = vcat(
+        [(lbl, color, lstyle) for (_, lbl, color, lstyle, _, _) in corn_info],
+        [(lbl, color, lstyle) for (_, lbl, color, lstyle, _, _) in soyoil_info],
+        [("Land rent", :black, :solid)])
+    p_leg = plot(legend=:top, legendcolumns=5, grid=false, showaxis=false, ticks=false,
+        xlims=(0, 1), ylims=(0, 1), framestyle=:none, legendfontsize=22)
+    for (lbl, color, lstyle) in leg_items
+        plot!(p_leg, [NaN], [NaN], label=lbl, linewidth=3, color=color, linestyle=lstyle)
+    end
+
+    return plot(plot(all_panels..., layout=(3, 4)),
+        p_leg,
+        layout=grid(2, 1, heights=[0.95, 0.05]), size=(2600, 1900),
+        plot_title="",
+        plot_titlefontsize=24, plot_titlefontweight=:bold, margin=10Plots.mm)
+end
+
+p_feedstock = plot_feedstock_prices_by_policy(results_extended_analysis; vlines=vlines_data)
+savefig(p_feedstock, joinpath(FIGURE_DIR, "price_feedstock.png"))
+
+# welfare
+function plot_welfare_summary_by_policy(results_extended_analysis; vlines=nothing)
+    welfare_summary = results_extended_analysis.welfare_summary
+    sectors = [:avi, :gas, :die, :corn, :soyoil, :soymeal]
+    sector_colors = Dict(
+        :avi => RGB(0.20, 0.44, 0.69),
+        :gas => RGB(0.99, 0.68, 0.38),
+        :die => RGB(0.90, 0.49, 0.13),
+        :corn => RGB(0.55, 0.75, 0.43),
+        :soyoil => RGB(0.30, 0.60, 0.30),
+        :soymeal => RGB(0.14, 0.40, 0.18))
+
+    sector_names = Dict(
+        :avi => "Aviation",
+        :gas => "Gasoline",
+        :die => "Diesel",
+        :corn => "Corn",
+        :soyoil => "Soyoil",
+        :soymeal => "Soymeal")
+
+    gr_color = RGB(0.55, 0.35, 0.17)
+
+    ylims_map = Dict(
+        :carbontax => (-100, 100),
+        :rfs => (-100, 100),
+        :lcfs => (-100, 100),
+        :taxcredit => (-200, 150))
+
+    show_ylabel = Dict(:carbontax => true, :rfs => false, :lcfs => true, :taxcredit => false)
+
+    panels = []
+    for (idx, (policy_type, _, xlabel, title)) in enumerate(POLICIES)
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        valid = [s for s in sorted if haskey(welfare_summary, s)]
+        xs = [get_x(s, policy_type) for s in valid]
+        ws = [welfare_summary[s] for s in valid]
+        n = length(xs)
+
+        x_upper = vlines[policy_type][2][1]
+
+        keep = [i for i in 1:n if xs[i] <= x_upper]
+        if length(keep) > 50
+            step = ceil(Int, length(keep) / 50)
+            keep = keep[1:step:end]
+        end
+        valid = valid[keep]
+        xs = xs[keep]
+        ws = [welfare_summary[s] for s in valid]
+        n = length(xs)
+
+        x_pad = 0.02 * x_upper
+
+        pl = plot(xlabel=xlabel, ylabel=show_ylabel[policy_type] ? "Welfare Change (B\$)" : "",
+            title=title, titlefontsize=20, titlefontweight=:bold, legend=false,
+            xlims=(-x_pad, x_upper), ylims=ylims_map[policy_type],
+            guidefontsize=18, tickfontsize=16,
+            left_margin=show_ylabel[policy_type] ? 12Plots.mm : 4Plots.mm, bottom_margin=5Plots.mm)
+
+        pos_cum = zeros(n)
+        neg_cum = zeros(n)
+        for sec in sectors
+            vals = [w.cs_by_sector[sec] for w in ws]
+            base = similar(vals)
+            top = similar(vals)
+            for j in 1:n
+                if vals[j] >= 0
+                    base[j] = pos_cum[j]
+                    top[j] = pos_cum[j] + vals[j]
+                    pos_cum[j] += vals[j]
+                else
+                    base[j] = neg_cum[j]
+                    top[j] = neg_cum[j] + vals[j]
+                    neg_cum[j] += vals[j]
+                end
+            end
+            plot!(pl, xs, top, fillrange=base,
+                fillalpha=0.75, linewidth=0, color=sector_colors[sec], label="")
+        end
+
+        ps_vals = [w.ps_land_change for w in ws]
+        ps_base = similar(ps_vals)
+        ps_top = similar(ps_vals)
+        for j in 1:n
+            if ps_vals[j] >= 0
+                ps_base[j] = pos_cum[j]
+                ps_top[j] = pos_cum[j] + ps_vals[j]
+                pos_cum[j] += ps_vals[j]
+            else
+                ps_base[j] = neg_cum[j]
+                ps_top[j] = neg_cum[j] + ps_vals[j]
+                neg_cum[j] += ps_vals[j]
+            end
+        end
+        plot!(pl, xs, ps_top, fillrange=ps_base,
+            fillalpha=0.45, linewidth=0, color=:gray50, label="")
+
+        if policy_type in [:carbontax, :taxcredit]
+            gr_vals = [w.gr_change for w in ws]
+            gr_base = similar(gr_vals)
+            gr_top = similar(gr_vals)
+            for j in 1:n
+                if gr_vals[j] >= 0
+                    gr_base[j] = pos_cum[j]
+                    gr_top[j] = pos_cum[j] + gr_vals[j]
+                    pos_cum[j] += gr_vals[j]
+                else
+                    gr_base[j] = neg_cum[j]
+                    gr_top[j] = neg_cum[j] + gr_vals[j]
+                    neg_cum[j] += gr_vals[j]
+                end
+            end
+            plot!(pl, xs, gr_top, fillrange=gr_base,
+                fillalpha=0.55, linewidth=0, color=gr_color, label="")
+        end
+
+        plot!(pl, xs, [w.private_surplus for w in ws], linewidth=4, linestyle=:dot, color=:black, label="")
+
+        sw_vals = [w.social_welfare for w in ws]
+        plot!(pl, xs, sw_vals, linewidth=4, linestyle=:dot, color=:red, label="")
+
+        hline!(pl, [0], color=:gray, linestyle=:dot, label="", alpha=0.5)
+        add_vlines!(pl, policy_type, vlines; annotate_y=ylims_map[policy_type][2]*0.9)
+
+        max_idx = argmax(sw_vals)
+        scatter!(pl, [xs[max_idx]], [sw_vals[max_idx]], marker=:circle, markersize=8,
+            color=:red, markerstrokecolor=:black, markerstrokewidth=1.5, label="")
+
+        push!(panels, pl)
+    end
+
+    p_leg = plot(legend=:top, legendcolumns=4, grid=false, showaxis=false,
+        ticks=false, xlims=(0, 1), ylims=(0, 1), framestyle=:none,
+        legendfontsize=14, background_color=:white)
+    plot!(p_leg, [NaN], [NaN], seriestype=:shape, fillalpha=0.45,
+        linewidth=0, color=:gray50, label="Producer surplus")
+    for sec in sectors
+        plot!(p_leg, [NaN], [NaN], seriestype=:shape, fillalpha=0.75,
+            linewidth=0, color=sector_colors[sec], label="Cons: $(sector_names[sec])")
+    end
+
+    plot!(p_leg, [NaN], [NaN], seriestype=:shape, fillalpha=0.55,
+        linewidth=0, color=gr_color, label="Govt Revenue")
+    plot!(p_leg, [NaN], [NaN], linewidth=4, linestyle=:dot, color=:black, label="Private")
+    plot!(p_leg, [NaN], [NaN], linewidth=4, linestyle=:dot, color=:red, label="Social")
+
+    return plot(
+        plot(panels..., layout=(2, 2)),
+        p_leg, layout=grid(2, 1, heights=[0.86, 0.14]),
+        size=(1400, 1150), background_color=:white)
+end
+
+welfare=plot_welfare_summary_by_policy(results_extended_analysis; vlines=vlines_data)
+savefig(welfare, joinpath(FIGURE_DIR, "welfare.png"))
+
+# emissions
+function plot_emissions_stacked_broken_axis(results_extended_analysis;
+    vlines=nothing, break_point=1.2, y_max=2.6)
+    solutions = results_extended_analysis.solutions
+    GAS_FUELS = [:gasoline, :ethanol]
+    DIESEL_FUELS = [:diesel, :biodiesel_soy, :biodiesel_nonsoy, :rd_soy, :rd_nonsoy]
+    sector_info = [(:gas, "Road (Gasoline)", :steelblue), (:die, "Road (Diesel)", :orange),
+        (:food, "Food", :green), (:avi, "Aviation", :red)]
+
+    legend_order = [(:avi, "Aviation", :red), (:gas, "Road (Gasoline)", :steelblue),
+        (:die, "Road (Diesel)", :orange), (:food, "Food", :green)]
+
+    tick_step = Dict(:carbontax => 100.0, :rfs => 0.1, :lcfs => 0.05, :taxcredit => 5.0)
+
+    function get_sector_em(sol)
+        (food=sol.emissions.food,
+            gas=sum(sol.emissions.by_fuel[g] for g in GAS_FUELS),
+            die=sum(sol.emissions.by_fuel[g] for g in DIESEL_FUELS),
+            avi=sol.emissions.aviation)
+    end
+    function draw_stacked!(p, xs, vals)
+        cum = zeros(length(xs))
+        for (key, _, color) in sector_info
+            new_cum = cum .+ vals[key]
+            plot!(p, xs, new_cum, fillrange=cum, fillalpha=0.75, fillcolor=color,
+                linewidth=1.2, color=color, label=string(key))
+            cum = new_cum
+        end
+    end
+
+    top_plots, bot_plots = [], []
+    for (idx, (policy_type, _, xlabel, title)) in enumerate(POLICIES)
+        show_ylabel = idx == 1
+
+        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
+        xs = [get_x(s, policy_type) for s in sorted if !isnothing(solutions[s])]
+        vals = Dict(k => [getfield(get_sector_em(solutions[s]), k)
+                          for s in sorted if !isnothing(solutions[s])]
+                    for (k, _, _) in sector_info)
+
+        x_upper = vlines[policy_type][2][1]
+        xl = (minimum(xs), x_upper)
+
+        # 정책별 세로 그리드 간격
+        step = tick_step[policy_type]
+        xt = collect((ceil(xl[1]/step)*step):step:xl[2])
+
+        p_top = plot(title=title, titlefontsize=22, titlefontweight=:bold,
+            ylabel=show_ylabel ? "Billion ton CO₂e" : "", legend=false,
+            grid=true, gridalpha=0.3, gridcolor=:gray, gridlinewidth=0.5,
+            xlims=xl, ylims=(break_point, y_max),
+            xticks=(xt, fill("", length(xt))),
+            bottom_margin=-4Plots.mm, top_margin=10Plots.mm,
+            left_margin=show_ylabel ? 20Plots.mm : 6Plots.mm,
+            guidefontsize=18, tickfontsize=16)
+        draw_stacked!(p_top, xs, vals)
+        hline!(p_top, [break_point], color=:white, linewidth=6, label="")
+        add_vlines!(p_top, policy_type, vlines; annotate_y=y_max * 0.97)
+        push!(top_plots, p_top)
+
+        p_bot = plot(xlabel=xlabel, legend=false,
+            grid=true, gridalpha=0.3, gridcolor=:gray, gridlinewidth=0.5,
+            xlims=xl, ylims=(0.0, break_point), yticks=[0.0],
+            xticks=xt,
+            top_margin=-4Plots.mm, bottom_margin=14Plots.mm,
+            left_margin=show_ylabel ? 20Plots.mm : 6Plots.mm,
+            guidefontsize=18, tickfontsize=16)
+        draw_stacked!(p_bot, xs, vals)
+        hline!(p_bot, [break_point], color=:white, linewidth=6, label="")
+        add_vlines!(p_bot, policy_type, vlines)
+        push!(bot_plots, p_bot)
+    end
+
+    p_leg = make_legend_panel([(lbl, color) for (_, lbl, color) in legend_order], ncols=4, fontsize=17)
+    return plot(plot(vcat(top_plots, bot_plots)..., layout=grid(2, 4, heights=[0.75, 0.25])),
+        p_leg, layout=grid(2, 1, heights=[0.93, 0.07]), size=(2200, 1300),
+        plot_title="",
+        plot_titlefontsize=20, plot_titlefontweight=:bold, margin=8Plots.mm)
+end
+
+emissions=plot_emissions_stacked_broken_axis(results_extended_analysis; vlines=vlines_data, break_point=1.2, y_max=2.6)
+savefig(emissions, joinpath(FIGURE_DIR, "emissions.png"))

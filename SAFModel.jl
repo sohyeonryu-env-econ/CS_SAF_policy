@@ -557,15 +557,16 @@ function build_unified_model(params, config)
 
         # Policy-specific adjustments (aviation fuels only)
         # 1. Carbon tax
-        #config.t * (
-        #    g in AVIATION_FUELS ? (
-        #        (g ∈ [:saf_atj_cs, :saf_hefa_cs] && !config.recognize_cs) ? 0.0 : delta[g]
-        #    ) : 0.0
-        #) +
         config.t * (
-            config.carbon_tax_scope == :aviation ? (g in AVIATION_FUELS ? delta[g] : 0.0) :
-            config.carbon_tax_scope == :all ? (g in ALL_GOODS ? delta[g] : 0.0) : 0.0
+            g in AVIATION_FUELS ? (
+                (g ∈ [:saf_atj_cs, :saf_hefa_cs] && !config.recognize_cs) ? 0.0 : delta[g]
+            ) : 0.0
         ) +
+        #config.t * (
+        #    config.carbon_tax_scope == :aviation ? (g in AVIATION_FUELS ? delta[g] : 0.0) :
+        #    config.carbon_tax_scope == :all ? (g in ALL_GOODS ? delta[g] : 0.0) : 0.0
+        #) +
+
 
         # 2. RFS aviation mandate
         λ_rfs_avi * (
