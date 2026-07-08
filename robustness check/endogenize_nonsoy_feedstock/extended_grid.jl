@@ -304,8 +304,9 @@ function plot_mac_comparison_simple(results_extended_analysis, mac_extended;
         plot_titlefontsize=30, plot_titlefontweight=:bold, background_color=:white)
 end
 
-display(plot_mac_comparison_simple(results_extended_analysis, mac_extended;
-    vlines_abatement=vlines_abatement, y_max=1100.0, y_min=-250.0))
+mac=plot_mac_comparison_simple(results_extended_analysis, mac_extended; vlines_abatement=vlines_abatement, y_max=1100.0, y_min=-250.0)
+savefig(mac, joinpath(OUTPUT_DIR, "nonsoy_endo_MAC.png"))
+
 
 # =================================================================================
 # 6. Results DataFrame
