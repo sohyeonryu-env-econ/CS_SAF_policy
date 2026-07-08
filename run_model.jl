@@ -21,9 +21,9 @@ const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-Univers
 # =================================================================================
 
 policy_configs_base = (
-    statusquo=(t=0.0, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation),
-    carbontax_first_best_all=(t=190.0, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:all),
-    carbontax_first_best_avi=(t=190.0, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
+    statusquo=(t=0.0, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation, use_ci_threshold=false, recognize_cs=true),
+    carbontax_first_best_all=(t=190.0, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:all, use_ci_threshold=false, recognize_cs=true),
+    carbontax_first_best_avi=(t=190.0, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation, use_ci_threshold=false, recognize_cs=true)
 )
 
 results_base = Dict()

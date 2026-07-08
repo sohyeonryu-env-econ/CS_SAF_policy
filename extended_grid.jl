@@ -34,6 +34,7 @@ begin
         c = EXTENDED_POLICY_MATRIX[s]
         policy_type == :carbontax ? c.t :
         policy_type == :rfs ? c.θ_avi :
+        policy_type == :rfs_no_cithres ? c.θ_avi :
         policy_type == :lcfs ? c.σ : c.p
     end
 
@@ -76,6 +77,10 @@ begin
         for θ in POLICY_RANGES.θ_avi
             scenarios[Symbol("rfs_$(round(Int, θ*1000))")] =
                 (t=0.0, θ_avi=Float64(θ), σ=0.0, p=0.0, carbon_tax_scope=:aviation, use_ci_threshold=true, recognize_cs=true)
+        end
+        for θ in POLICY_RANGES.θ_avi
+            scenarios[Symbol("rfsnoci_$(round(Int, θ*1000))")] =
+                (t=0.0, θ_avi=Float64(θ), σ=0.0, p=0.0, carbon_tax_scope=:aviation, use_ci_threshold=false, recognize_cs=true)
         end
         for σ in POLICY_RANGES.σ
             scenarios[Symbol("lcfs_$(round(Int, σ*1000))")] =
@@ -151,6 +156,7 @@ begin
             scenario_groups=(
                 carbontax=[k for k in keys(valid) if startswith(String(k), "carbontax_")],
                 rfs=[k for k in keys(valid) if startswith(String(k), "rfs_")],
+                rfs_no_cithres=[k for k in keys(valid) if startswith(String(k), "rfsnoci_")],
                 lcfs=[k for k in keys(valid) if startswith(String(k), "lcfs_")],
                 taxcredit=[k for k in keys(valid) if startswith(String(k), "taxcredit_")],
             )
@@ -212,6 +218,7 @@ begin
         pv_vals = [EXTENDED_POLICY_MATRIX[d.scenario][
             policy_type == :carbontax ? :t :
             policy_type == :rfs ? :θ_avi :
+            policy_type == :rfs_no_cithres ? :θ_avi :
             policy_type == :lcfs ? :σ : :p] for d in data_iter]
 
         idx = sortperm(ab_vals)

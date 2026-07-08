@@ -557,7 +557,11 @@ function build_unified_model(params, config)
 
         # Policy-specific adjustments (aviation fuels only)
         # 1. Carbon tax
-        #config.t * (g in AVIATION_FUELS ? delta[g] : 0.0) +
+        #config.t * (
+        #    g in AVIATION_FUELS ? (
+        #        (g ∈ [:saf_atj_cs, :saf_hefa_cs] && !config.recognize_cs) ? 0.0 : delta[g]
+        #    ) : 0.0
+        #) +
         config.t * (
             config.carbon_tax_scope == :aviation ? (g in AVIATION_FUELS ? delta[g] : 0.0) :
             config.carbon_tax_scope == :all ? (g in ALL_GOODS ? delta[g] : 0.0) : 0.0
@@ -565,18 +569,29 @@ function build_unified_model(params, config)
 
         # 2. RFS aviation mandate
         λ_rfs_avi * (
-            (g == :jet_fuel) ? config.θ_avi :
-            #(g in SAF_GOODS) ? -1.6 : 0.0 # without 50% CI threshold
-            (g in SAF_GOODS && delta[g] <= 0.5 * delta[:jet_fuel]) ? -1.6 : 0.0 # 50% CI threshold
+            g == :jet_fuel ? config.θ_avi :
+            g in SAF_GOODS ? (
+                ((!config.use_ci_threshold || delta[g] <= 0.5 * delta[:jet_fuel]) &&
+                 (config.recognize_cs || g ∉ [:saf_atj_cs, :saf_hefa_cs])) ? -1.6 : 0.0
+            ) : 0.0
         ) +
 
         # 3. LCFS
-        λ_lcfs * (g in AVIATION_FUELS ?
-                  -((1 - config.σ) * delta[:jet_fuel] - delta[g]) : 0.0
+        λ_lcfs * (
+            g in AVIATION_FUELS ? (
+                g == :jet_fuel ? -((1 - config.σ) * delta[:jet_fuel] - delta[g]) :
+                ((!config.use_ci_threshold || delta[g] <= 0.5 * delta[:jet_fuel]) &&
+                 (config.recognize_cs || g ∉ [:saf_atj_cs, :saf_hefa_cs])) ?
+                -((1 - config.σ) * delta[:jet_fuel] - delta[g]) : 0.0
+            ) : 0.0
         ) +
 
         #. 4. Tax credit for SAF
-        -(g in SAF_GOODS && haskey(delta_mj, g) ? tax_credit_rate(delta_mj[g], baselineCI, config.p) : 0.0)
+        -(g in SAF_GOODS && haskey(delta_mj, g) ?
+          ((!config.use_ci_threshold || delta[g] <= 0.5 * delta[:jet_fuel]) &&
+           (config.recognize_cs || g ∉ [:saf_atj_cs, :saf_hefa_cs])) ?
+          tax_credit_rate(delta_mj[g], baselineCI, config.p) : 0.0
+          : 0.0)
         # If the tax credit is applied to all biofuels
         #-(g in union(SAF_GOODS, BIODIESEL_GOODS, RD_GOODS, [:ethanol]) && haskey(delta_mj, g) ?
         #  tax_credit_rate(delta_mj[g], baselineCI, config.p) : 0.0)
