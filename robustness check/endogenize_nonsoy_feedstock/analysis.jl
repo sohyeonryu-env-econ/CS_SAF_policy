@@ -9,8 +9,7 @@ using JuMP
 
 const SCC = 190
 const POL = [:carbontax, :rfs, :lcfs, :taxcredit]
-const SQ_CONFIG = (t=0.0, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
-
+const SQ_CONFIG = (t=0.0, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation, use_ci_threshold=false, recognize_cs=true)
 
 # =====================
 # 1) Implicit Tax/Subsidy Calculation
@@ -260,11 +259,13 @@ function make_duals_table(solutions; scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(solutions)) : scenarios
     df = DataFrame(Scenario=String[], λ_rfs=Float64[], λ_rfs_avi=Float64[],
         λ_lcfs=Float64[], r_land=Float64[], λ_blendwall_ethanol=Float64[],
-        λ_blendwall_biodiesel=Float64[], λ_nonsoy_capacity=Float64[])
+        λ_blendwall_biodiesel=Float64[], #λ_nonsoy_capacity=Float64[]
+    )
     for s in scenario_list
         d = solutions[s].duals
         push!(df, (String(s), d.λ_rfs, d.λ_rfs_avi, d.λ_lcfs, d.r_land,
-            d.λ_blendwall_ethanol, d.λ_blendwall_biodiesel, d.λ_nonsoy_capacity))
+            d.λ_blendwall_ethanol, d.λ_blendwall_biodiesel, #d.λ_nonsoy_capacity
+        ))
     end
     return df
 end
