@@ -5,7 +5,6 @@ using Pkg
 using Printf
 using Plots
 using DataFrames
-Pkg.add("DataFrames")
 
 # =================================================================================
 # 1. Input
@@ -69,8 +68,7 @@ const FOOD_GOODS = GOODS[19:20]  # all food goods
 # parameters
 # =====================
 
-# delta: Carbon Intensity (ton CO2e per gallon) all fuel and food goods
-
+# δ: Carbon Intensity (ton CO2e per gallon) all fuel and food goods
 δ_vec = [
     0.01155398, 0.007723734, 0.004674426, 0.004609978, 0.003717805, 0.002029502,
     0.012039062, 0.003705445, 0.014101869, 0.003879759, 0.0022,
@@ -123,8 +121,7 @@ soybean_to_meal = 0.02155 # metric ton / bushel of soybeans
 # meal per oil ratio: (million metric ton of meal per billion lb of oil)
 meal_per_oil = 2.22
 
-# delta_mj for IRA credit calculation
-
+# delta_mj for IRA credit calculation excluding ILUC
 δ_mj_vec = [
     89.0,      # 1. jet_fuel
     50.86,   # 2. saf_atj_conv
@@ -140,7 +137,6 @@ meal_per_oil = 2.22
     22.4,     # 12. rd_soy
     15.74      # 13. rd_nonsoy
 ]
-
 
 δ_mj = Dict(g => v for (g, v) in zip(FUEL_GOODS, δ_mj_vec))
 
@@ -170,10 +166,6 @@ demand = Dict(
 )
 
 # Fuel supply functions: fuel hockey stick = c0 + c1*q + c2*(x-v)^2
-# Feedstock to SAF production constant
-
-
-#LOW
 c0_vec = [
     2.338,  # 1. jet_fuel
     2.3,               # 2. saf_atj (shared by conv & cs ATJ SAF)
@@ -230,7 +222,6 @@ for (key, c0, c1, c2, v) in zip(fuel_goods_cost_map, c0_vec, c1_vec, c2_vec, v_v
     fuel_cost[key] = (c0=c0, c1=c1, c2=c2, v=v)
 end
 
-
 # land supply functions: land = L0*(r/r0)^ϵ
 land_supply = (
     L0=0.11768, # baseline land use
@@ -246,12 +237,11 @@ nonsoy_supply = (
 
 supply = (
     fuel=fuel_cost,
-    #feedstock=feedstock_cost,
     land=land_supply,
     nonsoy=nonsoy_supply
 )
 
-# land corn ratio
+# fixed share of corn to soybeans
 ω = 0.54
 
 # κ: fixed costs of climate-smart practice adoption
@@ -263,6 +253,7 @@ const nonsoy_feedstock_price = 0.49
 # HEFA SAF additional processing cost compared to RD ($/gal)
 const hefa_saf_premium = 0.064
 
+# coefficient values for the model
 coeff = (
     delta=δ,
     gamma=γ,
@@ -323,9 +314,7 @@ meta = Dict(
     )
 )
 
-# =====================
 # put them into a container
-# =====================
 sets = (
     processes=GOODS,
     scenarios=SCENARIOS,
@@ -342,7 +331,6 @@ params = (
     demand=demand,
     supply=supply
 )
-
 
 # =================================================================================
 # 2. Model Building
@@ -381,7 +369,6 @@ function build_unified_model(params, config)
     p0_ns = supply.nonsoy.p0_ns
     ϵ_ns = supply.nonsoy.ϵ_ns
 
-
     # Product groups    
     FEEDSTOCK_GOODS = [:feedstock_corn_n, :feedstock_corn_cs, :feedstock_soy_n, :feedstock_soy_cs, :feedstock_nonsoy]
     SAF_GOODS = [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
@@ -396,6 +383,7 @@ function build_unified_model(params, config)
     # Variables
     # =====================
 
+    # price and quantities
     @variables model begin
         x[s in SECTORS] >= 0.1 # demand quantities
         q[g in FUEL_GOODS] >= 0 # supply quantities
@@ -403,11 +391,10 @@ function build_unified_model(params, config)
         p_c[s in [:avi, :gas, :die, :soymeal]] >= 0 # consumer's price on x
         l_n >= 0 # conventional land use
         l_cs >= 0 # climate-smart land use
-
     end
     set_start_value(p_f[:feedstock_nonsoy], p0_ns)
 
-    # Base dual variables 
+    # Common dual variables 
     @variable(model, λ_rfs >= 0)
     @variable(model, λ_blendwall_ethanol >= 0)
     @variable(model, λ_blendwall_biodiesel >= 0)
@@ -416,7 +403,9 @@ function build_unified_model(params, config)
     # Policy-specific dual variables 
     @variable(model, λ_rfs_avi >= 0)      # RFS aviation
     @variable(model, λ_lcfs >= 0)         # LCFS
-    @variable(model, r_land >= 1)    # Land rent
+
+    # Land rent
+    @variable(model, r_land >= 1)
 
     # Variable naming
     for g in FUEL_GOODS
@@ -427,7 +416,7 @@ function build_unified_model(params, config)
     # Consumer's utility max
     # =====================
 
-    # marginal benefit
+    # consumer's marginal benefit for each sectors
     @expression(model, marginal_benefit[s in SECTORS],
         demand[s].A * x[s]^(demand[s].k))
 
@@ -436,18 +425,18 @@ function build_unified_model(params, config)
         :avi => p_c[:avi],
         :gas => p_c[:gas],
         :die => p_c[:die],
-        :corn => p_f[:feedstock_corn_n],
+        :corn => p_f[:feedstock_corn_n], # consumer buys food at the feedstock price
         :soyoil => p_f[:feedstock_soy_n],
         :soymeal => p_c[:soymeal]
     )
 
-    # Consumer's u-max conditions
+    # Consumer's u-max conditions (P=MB)
     @constraint(model, consumer_condition[s in SECTORS],
         sector_prices[s] - marginal_benefit[s] ⟂ x[s]
     )
 
     # =====================
-    # Price per unit
+    # Price per unit of fuels
     # =====================
 
     @expression(model, price_per_unit[g in GOODS],
@@ -479,14 +468,15 @@ function build_unified_model(params, config)
     # =====================
     # Upstream farmers
     # =====================
-    # feedstock production (soybeans to soybean oil conversion =10.71lb/bushel)
+    # feedstock production (soybeans to soybean oil crushing conversion =10.71lb/bushel)
+    # n: conventional, cs: climate-smart
     @expression(model, q_corn_n, omega * gamma[:feedstock_corn_n] * l_n)
     @expression(model, q_corn_cs, omega * gamma[:feedstock_corn_cs] * l_cs)
     @expression(model, q_soy_n, (1 - omega) * gamma[:feedstock_soy_n] * l_n * soybean_to_oil)
     # oil and meal are jointly produced, so soybeans quantity = soybean oil * soybean_to_oil = soybean meal * soybean_to_meal. gamma here is for soybeans before crushing.
     @expression(model, q_soy_cs, (1 - omega) * gamma[:feedstock_soy_cs] * l_cs * soybean_to_oil)
 
-    # Marginal revenue: Upstream farmers
+    # Marginal revenue for two types of farmers
     @expression(model, marginal_revenue_n,
         omega * gamma[:feedstock_corn_n] * p_f[:feedstock_corn_n] +
         (1 - omega) * gamma[:feedstock_soy_n] * (p_f[:feedstock_soy_n] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal)
@@ -497,12 +487,10 @@ function build_unified_model(params, config)
         (1 - omega) * gamma[:feedstock_soy_cs] * (p_f[:feedstock_soy_cs] * soybean_to_oil + p_c[:soymeal] * soybean_to_meal)
     )
 
-    # zero profit condition
-    # conventional farmer
+    # zero profit conditions for two types of farmers
     @constraint(model,
         r_land - marginal_revenue_n ⟂ l_n
     )
-    # climate-smart farmer
     @constraint(model,
         r_land + kappa - marginal_revenue_cs ⟂ l_cs
     )
@@ -518,8 +506,13 @@ function build_unified_model(params, config)
     @expression(model, total_saf_hefa,
         q[:saf_hefa_conv] + q[:saf_hefa_cs] + q[:saf_hefa_nonsoy] +
         q[:rd_soy] + q[:rd_nonsoy]
+    ) # HEFA SAF and RD share the same production facility. But HEFA SAF needs additional processing that costs HEFA premium
+
+    @expression(model, total_bd,
+        q[:biodiesel_soy] + q[:biodiesel_nonsoy]
     )
 
+    # Processing costs for different fuel types
     @expression(model, process_mc_atj,
         fuel_cost[:saf_atj_shared].c0 +
         fuel_cost[:saf_atj_shared].c1 * total_saf_atj +
@@ -534,16 +527,16 @@ function build_unified_model(params, config)
 
     @expression(model, process_mc_biodiesel,
         fuel_cost[:biodiesel_shared].c0 +
-        fuel_cost[:biodiesel_shared].c1 * (q[:biodiesel_soy] + q[:biodiesel_nonsoy]) +
-        fuel_cost[:biodiesel_shared].c2 * max(0, (q[:biodiesel_soy] + q[:biodiesel_nonsoy]) - fuel_cost[:biodiesel_shared].v)^2
+        fuel_cost[:biodiesel_shared].c1 * total_bd +
+        fuel_cost[:biodiesel_shared].c2 * max(0, total_bd - fuel_cost[:biodiesel_shared].v)^2
     )
 
-    # Marginal costs for other fuels
+    # Marginal costs for other fuels that do not have a shared production facility
     @expression(model, marginal_costs_fuel[g in (:jet_fuel, :gasoline, :diesel, :ethanol)],
         fuel_cost[g].c0 +
         fuel_cost[g].c1 * q[g] +
-        fuel_cost[g].c2 * max(0, q[g] - fuel_cost[g].v)^2)
-
+        fuel_cost[g].c2 * max(0, q[g] - fuel_cost[g].v)^2
+    )
 
     # Policy Coefficients (ALL policies included)
     @expression(model, policy_adjustment[g in FUEL_GOODS],
@@ -617,8 +610,7 @@ function build_unified_model(params, config)
         #  tax_credit_rate(delta_mj[g], baselineCI, config.p) : 0.0)
     )
 
-    # zero profit conditions
-    # marginal cost + policy adjustments - price ⟂ q
+    # zero profit conditions: marginal cost + policy adjustments - price ⟂ q
     # Conventional ATJ SAF    
     @constraint(model,
         process_mc_atj +
@@ -776,7 +768,6 @@ function build_unified_model(params, config)
 
 
     # Downstream markets
-
     @constraint(model,
         r[:jet_fuel] * (q[:jet_fuel] + beta[(:saf, :jet_fuel)] *
                                        sum(q[g] for g in SAF_GOODS)) - x[:avi]
@@ -809,7 +800,6 @@ function build_unified_model(params, config)
     # =====================
     # Policy Constraints
     # =====================
-
     # Base RFS D6 (always active)
     @constraint(model,
         q[:ethanol] +
