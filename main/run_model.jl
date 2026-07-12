@@ -53,7 +53,7 @@ function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.00
     for iter in 1:200
         (high - low) < 0.00001 && break
         mid = (low + high) / 2.0
-        config = (t=0.0, θ_avi=mid, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
+        config = (t=0.0, θ_avi=mid, σ=0.0, p=0.0, carbon_tax_scope=:aviation, use_ci_threshold=true, recognize_cs=true)
         model = SAFModel.build_unified_model(params, config)
         optimize!(model)
         !is_solved_and_feasible(model) && (high=mid; continue)
@@ -89,11 +89,14 @@ function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.00
             (high - low) < 0.00001 && break
             mid = (low + high) / 2.0
             config = if policy_type == :carbontax
-                (t=mid, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
+                (t=mid, θ_avi=0.0, σ=0.0, p=0.0, carbon_tax_scope=:aviation,
+                    use_ci_threshold=true, recognize_cs=true)
             elseif policy_type == :lcfs
-                (t=0.0, θ_avi=0.0, σ=mid, p=0.0, carbon_tax_scope=:aviation)
-            else
-                (t=0.0, θ_avi=0.0, σ=0.0, p=mid, carbon_tax_scope=:aviation)
+                (t=0.0, θ_avi=0.0, σ=mid, p=0.0, carbon_tax_scope=:aviation,
+                    use_ci_threshold=false, recognize_cs=true)
+            else  # taxcredit
+                (t=0.0, θ_avi=0.0, σ=0.0, p=mid, carbon_tax_scope=:aviation,
+                    use_ci_threshold=true, recognize_cs=true)
             end
 
             model = SAFModel.build_unified_model(params, config)

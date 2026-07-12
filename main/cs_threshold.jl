@@ -206,3 +206,164 @@ println("  Cases solved: ", join(string.(keys(all_case_results)), ", "))
 println("="^80)
 
 
+# figure_threshold.jl
+# Requires `all_case_results` in memory (run case_analysis.jl first).
+# Plots SAF composition by policy for case1 (Without CI threshold) vs
+# case2 (With CI threshold) as horizontal stacked bar charts.
+
+using CairoMakie
+
+# =================================================================================
+# Setup
+# =================================================================================
+# figure_threshold.jl
+# Requires `all_case_results` in memory (run case_analysis.jl first).
+# Plots SAF composition by policy for case1 (Without threshold) vs
+# case2 (With threshold) as horizontal stacked bar charts.
+# Matches the original figure: case1 and case2 each show RFS / LCFS / IRA only.
+
+using CairoMakie
+
+# =================================================================================
+# Setup
+# =================================================================================
+
+const FIGURE_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/figures"
+
+# SAF pathway stacking order and colors (same as original)
+saf_components = [
+    (:saf_atj_conv, "Conv ATJ-SAF", :blue),
+    (:saf_atj_cs, "CS ATJ-SAF", :red),
+    (:saf_hefa_conv, "Conv HEFA-SAF", :green),
+    (:saf_hefa_cs, "CS HEFA-SAF", :orange),
+    (:saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple),
+]
+
+# Policies shown in each panel, top to bottom
+# Original figure: both panels show RFS / LCFS / IRA (no carbon tax)
+panel_policies = [
+    (:rfs, "RFS"),
+    (:lcfs, "LCFS"),
+    (:taxcredit, "IRA"),
+]
+
+# Panels: (display title, case key)
+panels = [
+    ("Without threshold", :case1),
+    ("With threshold", :case2),
+]
+
+# =================================================================================
+# Helper: get SAF quantity directly from all_case_results
+# Uses safe accessor matching extract_solution's DenseAxisArray structure
+# =================================================================================
+
+function get_saf_quantity(case_key, policy, component)
+    case = all_case_results[case_key]
+    haskey(case.results, policy) || return 0.0
+    sol = case.results[policy]
+    isnothing(sol) && return 0.0
+    try
+        # extract_solution returns q as a JuMP DenseAxisArray;
+        # index by Symbol key directly
+        arr = sol.q
+        # DenseAxisArray: arr[component] works if component is in the axis
+        if hasproperty(arr, :data) && hasproperty(arr, :axes)
+            idx = findfirst(==(component), arr.axes[1])
+            isnothing(idx) && return 0.0
+            v = arr.data[idx]
+        else
+            v = arr[component]
+        end
+        return (ismissing(v) || !(v isa Number)) ? 0.0 : max(0.0, float(v))
+    catch
+        return 0.0
+    end
+end
+
+function target_reduction_mt(case_key)
+    all_case_results[case_key].target_reduction * 1000  # B ton CO2e → M ton CO2e
+end
+
+# =================================================================================
+# Figure
+# =================================================================================
+
+begin
+    xmax = 4.0
+    bar_h = 0.55
+    npol = length(panel_policies)
+    n_panels = length(panels)
+
+    fig = Figure(size=(1000, 440), fontsize=13)
+
+    for (pi, (ptitle, case_key)) in enumerate(panels)
+
+        red = target_reduction_mt(case_key)
+        subtitle = "(GHG reduction $(round(red, digits=2)) M tonCO₂e)"
+
+        ypos = collect(npol:-1:1)          # RFS at top
+        ylabels = [p[2] for p in panel_policies]
+
+        ax = Axis(fig[1, pi];
+            title=ptitle,
+            subtitle=subtitle,
+            titlesize=15,
+            subtitlesize=12,
+            titlefont=:bold,
+            xlabel="SAF production (B gal)",
+            xticks=0:0.5:xmax,
+            yticks=(ypos, ylabels),
+            ygridvisible=false,
+            topspinevisible=false,
+            rightspinevisible=false,
+            limits=((0, xmax + 0.5), (0.4, npol + 0.6)),
+        )
+
+        for (j, (pol_key, _)) in enumerate(panel_policies)
+            y = npol - j + 1
+            left = 0.0
+
+            for (comp_sym, _, comp_col) in saf_components
+                v = get_saf_quantity(case_key, pol_key, comp_sym)
+                v > 1e-10 || continue
+
+                poly!(ax,
+                    Rect2f(left, y - bar_h / 2, v, bar_h);
+                    color=comp_col,
+                    strokecolor=:white,
+                    strokewidth=1.0,
+                )
+                left += v
+            end
+
+            # total label at end of bar
+            if left > 1e-10
+                text!(ax, left + 0.05, y;
+                    text=string(round(left, digits=2), "B"),
+                    align=(:left, :center),
+                    fontsize=12,
+                )
+            end
+        end
+    end
+
+    # Shared legend at bottom
+    legend_elems = [PolyElement(color=c, strokecolor=:white) for (_, _, c) in saf_components]
+    legend_labels = [lab for (_, lab, _) in saf_components]
+    Legend(fig[2, 1:n_panels], legend_elems, legend_labels;
+        orientation=:horizontal,
+        framevisible=false,
+        nbanks=1,
+    )
+    rowsize!(fig.layout, 2, Auto(0.12))
+end
+
+display(fig)
+
+# =================================================================================
+# Save
+# =================================================================================
+
+fig_path = joinpath(FIGURE_DIR, "CI_threshold.png")
+save(fig_path, fig; px_per_unit=3)

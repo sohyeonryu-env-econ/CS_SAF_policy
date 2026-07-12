@@ -349,7 +349,7 @@ function results_to_dataframe(extended_analysis, policy_configs, mac_extended)
 
     for (name, sol) in solutions
         isnothing(sol) && continue
-        starswith(String(name), "rfsnoci_") && continue
+        startswith(String(name), "rfsnoci_") && continue
         config = policy_configs[name]
         str = String(name)
         ptype = occursin("carbontax", str) ? "carbontax" :

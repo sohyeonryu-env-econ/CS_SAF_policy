@@ -197,12 +197,12 @@ c2_vec = [
 ]
 
 v_vec = [
-    24050.0,  # 1. jet_fuel
+    25.34,  # 1. jet_fuel
     6.9,      # 2. saf_atj (shared)
     15.0,     # 3. saf_hefa (shared)
-    42557.0,  # 4. gasoline
+    130.61,  # 4. gasoline
     18.01,    # 5. ethanol
-    64.68,    # 6. diesel
+    48.9,    # 6. diesel
     5.0    # 7. biodiesel_soy
 ]
 
@@ -815,16 +815,24 @@ function build_unified_model(params, config)
 
     # RFS aviation (controlled by θ_avi)
     @constraint(model,
-        #1.6 * sum(q[g] for g in SAF_GOODS) - config.θ_avi * q[:jet_fuel] # without 50% CI threshold
-        1.6 * sum(q[g] for g in SAF_GOODS if delta[g] <= 0.5 * delta[:jet_fuel]) - config.θ_avi * q[:jet_fuel] # 50% CI threshold
+        1.6 * sum(
+            q[g] for g in SAF_GOODS if
+                     (!config.use_ci_threshold || delta[g] <= 0.5 * delta[:jet_fuel]) &&
+                     (config.recognize_cs || g ∉ [:saf_atj_cs, :saf_hefa_cs])
+        ) - config.θ_avi * q[:jet_fuel]
         ⟂
         λ_rfs_avi
     )
 
+
     # LCFS (controlled by σ)
     @constraint(model,
         (1 - config.σ) * delta[:jet_fuel] * sum(q[g] for g in AVIATION_FUELS) -
-        sum(delta[g] * q[g] for g in AVIATION_FUELS)
+        (delta[:jet_fuel] * q[:jet_fuel] +
+         sum(delta[g] * q[g] for g in SAF_GOODS if
+                                 (!config.use_ci_threshold || delta[g] <= 0.5 * delta[:jet_fuel]) &&
+                                 (config.recognize_cs || g ∉ [:saf_atj_cs, :saf_hefa_cs])
+        ))
         ⟂
         λ_lcfs
     )
