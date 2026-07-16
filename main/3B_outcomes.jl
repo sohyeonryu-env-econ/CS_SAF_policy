@@ -588,8 +588,6 @@ function to_latex_C(df; scc=190)
 end
 
 
-# 사용:
-# 방법 A (권장, 재계산 없음 — run_model.jl 이 이미 welfare_target 을 저장해뒀다면):
 @load joinpath(OUTPUT_DIR, "results_target.jld2") welfare_target
 df_C = build_table_C_from_welfare(welfare_target)
 println(to_latex_C(df_C; scc=190))
