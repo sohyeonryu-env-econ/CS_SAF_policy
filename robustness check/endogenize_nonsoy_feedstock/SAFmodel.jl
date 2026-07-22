@@ -68,7 +68,8 @@ const FOOD_GOODS = GOODS[19:20]  # all food goods
 # parameters
 # =====================
 
-# δ: Carbon Intensity (ton CO2e per gallon) all fuel and food goods
+# δ: Carbon Intensity. Fuel goods are ton CO2e per gallon.
+# Food goods differ: corn is ton CO2e per bushel, soyoil is ton CO2e per lb (see emissions calc in analysis.jl)
 δ_vec = [
     0.01155398, 0.007723734, 0.004674426, 0.004609978, 0.003717805, 0.002029502,
     0.012039062, 0.003705445, 0.014101869, 0.003879759, 0.0022,
@@ -119,7 +120,8 @@ soybean_to_oil = 10.71 # lb oil per bushel of soybeans
 soybean_to_meal = 0.02155 # metric ton / bushel of soybeans
 
 # meal per oil ratio: (million metric ton of meal per billion lb of oil)
-meal_per_oil = 2.22
+# consistent with soybean_to_meal / soybean_to_oil * 1000 = 0.02155/10.71*1000 ≈ 2.01
+meal_per_oil = 2.01
 
 # delta_mj for IRA credit calculation excluding ILUC
 δ_mj_vec = [
