@@ -1,11 +1,9 @@
-module SAFModel
+module ModelCETLand
 
 using JuMP, PATHSolver
-using Pkg
 using Printf
 using Plots
 using DataFrames
-Pkg.add("DataFrames")
 
 # =================================================================================
 # 1. Input
@@ -71,7 +69,7 @@ const FOOD_GOODS = GOODS[18:19]  # all food goods
 # delta: Carbon Intensity. Fuel goods are ton CO2e per gallon.
 # Food goods differ: corn is ton CO2e per bushel, soyoil is ton CO2e per lb (see emissions calc in analysis.jl)
 δ_vec = [
-    0.01155398, 0.007723734, 0.004674426, 0.004609978, 0.003717805, 0.002029502,
+    0.01155398, 0.007320614, 0.004674426, 0.004609978, 0.003717805, 0.002029502,
     0.012039062, 0.003705445, 0.014101869, 0.003879759, 0.0022,
     0.003879759, 0.0022, 0.004623319, 0.002040691
 ]
@@ -120,8 +118,8 @@ soybean_to_oil = 10.71 # lb oil per bushel of soybeans
 soybean_to_meal = 0.02155 # metric ton / bushel of soybeans
 
 # meal per oil ratio: (million metric ton of meal per billion lb of oil)
-# consistent with soybean_to_meal / soybean_to_oil * 1000 = 0.02155/10.71*1000 ≈ 2.01
-meal_per_oil = 2.01
+# Derived, not rounded. See main/model_cet_land.jl for why the rounded 2.01 broke integrability.
+meal_per_oil = soybean_to_meal / soybean_to_oil * 1000
 
 # delta_mj for IRA credit calculation
 δ_mj_vec = [
@@ -203,12 +201,12 @@ c2_vec = [
 ]
 
 v_vec = [
-    24050.0,  # 1. jet_fuel
+    25.34,  # 1. jet_fuel
     6.9,      # 2. saf_atj (shared)
     15.0,     # 3. saf_hefa (shared)
-    42557.0,  # 4. gasoline
+    130.61,  # 4. gasoline
     18.01,    # 5. ethanol
-    64.68,    # 6. diesel
+    48.9,    # 6. diesel
     5.0    # 7. biodiesel_soy
 ]
 
@@ -250,7 +248,19 @@ supply = (
 κ = 19.0  # $ per acre
 
 # Non-soy feedstock price ($/lb)
-const nonsoy_feedstock_price = 0.49
+# Non-soy supply is perfectly elastic at this price up to nonsoy_capacity, then vertical.
+# 0.28, not the 0.49 observed weighted-average market price: 0.28 is the value implied by
+# the status-quo RD/BD zero-profit conditions, i.e. the MARGINAL non-soy feedstock cost NET
+# of road-sector policy support (BTC, road LCFS), neither of which is modelled. Kept
+# identical to main/model_cet_land.jl and to p0_ns in the endogenised-supply robustness check so
+# that each robustness check varies only its intended dimension.
+const nonsoy_feedstock_price = 0.28
+
+# non-soy feedstock availability ceiling (billion lb)
+# Shadow price λ_nonsoy_capacity on this constraint is the per-lb rationing wedge:
+# refiners pay nonsoy_feedstock_price + λ, so λ * (feedstock used) is the scarcity
+# rent accruing to whoever owns the non-soy feedstock. See calculate_ps_nonsoy_changes.
+const nonsoy_capacity = 30.0
 
 # HEFA SAF additional processing cost compared to RD ($/gal)
 const hefa_saf_premium = 0.064
@@ -271,6 +281,7 @@ coeff = (
     delta_mj=δ_mj,
     baselineCI=baselineCI,
     nonsoy_feedstock_price=nonsoy_feedstock_price,
+    nonsoy_capacity=nonsoy_capacity,
     hefa_saf_premium=hefa_saf_premium
 )
 
@@ -366,6 +377,7 @@ function build_unified_model(params, config; warm_start=nothing)
     delta_mj = coeff.delta_mj
     baselineCI = coeff.baselineCI
     nonsoy_feedstock_price = coeff.nonsoy_feedstock_price
+    nonsoy_capacity = coeff.nonsoy_capacity
     hefa_saf_premium = coeff.hefa_saf_premium
     L0 = land_supply.L0
     r0_land = land_supply.r0_land
@@ -874,8 +886,8 @@ function build_unified_model(params, config; warm_start=nothing)
 
     # Non-soy capacity (always active)
     @constraint(model,
-        30 - (alpha[:biodiesel_nonsoy] * q[:biodiesel_nonsoy] + alpha[:rd_nonsoy] * q[:rd_nonsoy] +
-              alpha[:saf_hefa_nonsoy] * q[:saf_hefa_nonsoy])
+        nonsoy_capacity - (alpha[:biodiesel_nonsoy] * q[:biodiesel_nonsoy] + alpha[:rd_nonsoy] * q[:rd_nonsoy] +
+                           alpha[:saf_hefa_nonsoy] * q[:saf_hefa_nonsoy])
         ⟂
         λ_nonsoy_capacity
     )
@@ -932,13 +944,13 @@ function extract_solution(model, scenario)
     p_c = value.(model[:p_c])
     p_f = value.(model[:p_f])
 
-    # 새 변수명으로 수정
+    # Renamed variables
     l_n_corn = value(model[:l_n_corn])
     l_cs_corn = value(model[:l_cs_corn])
     l_n_soy = value(model[:l_n_soy])
     l_cs_soy = value(model[:l_cs_soy])
 
-    # 총량 derived
+    # Totals, derived
     l_n = l_n_corn + l_n_soy
     l_cs = l_cs_corn + l_cs_soy
 
@@ -1002,4 +1014,4 @@ export params, tax_credit_rate, build_unified_model, run_scenario, extract_solut
 export FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
 export is_solved_and_feasible
 
-end # module SAFModel
+end # module ModelCETLand

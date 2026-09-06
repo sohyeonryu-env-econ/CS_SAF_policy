@@ -1,0 +1,19 @@
+# Finder writes one of these per directory. Nothing to do with the code.
+.DS_Store
+
+# Python virtualenv. This project runs on Julia, so it is never needed here.
+.venv/
+
+# Computed results. A single jld2 runs to tens or hundreds of MB, too large for GitHub.
+# Output lands here when the paths are left repo-relative (SAF_OUTPUT overrides the base).
+/output/
+
+# Julia build artifacts
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+deps/build.log
+
+# Hand-run check that the two engines (MCP and social planner) return the same solution.
+# It produces no table or figure, so it stays out of the repo.
+main/check_engines.jl

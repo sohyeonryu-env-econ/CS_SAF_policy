@@ -1,7 +1,6 @@
-module SAFModel
+module ModelEndoNonsoy
 
 using JuMP, PATHSolver
-using Pkg
 using Printf
 using Plots
 using DataFrames
@@ -71,7 +70,7 @@ const FOOD_GOODS = GOODS[19:20]  # all food goods
 # δ: Carbon Intensity. Fuel goods are ton CO2e per gallon.
 # Food goods differ: corn is ton CO2e per bushel, soyoil is ton CO2e per lb (see emissions calc in analysis.jl)
 δ_vec = [
-    0.01155398, 0.007723734, 0.004674426, 0.004609978, 0.003717805, 0.002029502,
+    0.01155398, 0.007320614, 0.004674426, 0.004609978, 0.003717805, 0.002029502,
     0.012039062, 0.003705445, 0.014101869, 0.003879759, 0.0022,
     0.003879759, 0.0022, 0.004623319, 0.002040691
 ]
@@ -120,8 +119,8 @@ soybean_to_oil = 10.71 # lb oil per bushel of soybeans
 soybean_to_meal = 0.02155 # metric ton / bushel of soybeans
 
 # meal per oil ratio: (million metric ton of meal per billion lb of oil)
-# consistent with soybean_to_meal / soybean_to_oil * 1000 = 0.02155/10.71*1000 ≈ 2.01
-meal_per_oil = 2.01
+# Derived, not rounded. See main/model_endo_nonsoy.jl for why the rounded 2.01 broke integrability.
+meal_per_oil = soybean_to_meal / soybean_to_oil * 1000
 
 # delta_mj for IRA credit calculation excluding ILUC
 δ_mj_vec = [
@@ -199,12 +198,12 @@ c2_vec = [
 ]
 
 v_vec = [
-    24050.0,  # 1. jet_fuel
+    25.34,  # 1. jet_fuel
     6.9,      # 2. saf_atj (shared)
     15.0,     # 3. saf_hefa (shared)
-    42557.0,  # 4. gasoline
+    130.61,  # 4. gasoline
     18.01,    # 5. ethanol
-    64.68,    # 6. diesel
+    48.9,    # 6. diesel
     5.0    # 7. biodiesel_soy
 ]
 
@@ -231,9 +230,15 @@ land_supply = (
     ϵ_land=0.1  # land supply elasticity
 )
 # non soy feedstock supply functions: supply = ns0*(p/p0)^ϵ
+#nonsoy_supply = (
+#    ns0=20.72, #28.97. 21 is the status quo rd and bd times alpha, 28 comes from the statistics.
+#    p0_ns=0.28,
+#    ϵ_ns=0.3
+#)
+
 nonsoy_supply = (
-    ns0=20.72, #28.97, 21은 sq의 rd, bd에 알파곱해서 나온 값, 28은 통계에서 나온 값. 21하면 잘 돌아가는데 28하면 결과가 막 튐.
-    p0_ns=0.28,
+    ns0=19.5019,   # usage just obtained
+    p0_ns=0.4,       # the c just used
     ϵ_ns=0.3
 )
 
@@ -250,6 +255,8 @@ supply = (
 κ = 19.0  # $ per acre
 
 # Non-soy feedstock price ($/lb)
+# UNUSED in this version. The non-soy price is endogenous (see nonsoy_supply.p0_ns = 0.28).
+# Left here only so the file stays diff-able against main/model_endo_nonsoy.jl. Not in `coeff`.
 const nonsoy_feedstock_price = 0.49
 
 # HEFA SAF additional processing cost compared to RD ($/gal)
@@ -572,9 +579,16 @@ function build_unified_model(params, config)
 
         # Policy-specific adjustments (aviation fuels only)
         # 1. Carbon tax
+        # recognize_cs = false means the regulator cannot verify climate-smart practices,
+        # so a CS pathway is TAXED AS IF IT WERE ITS CONVENTIONAL COUNTERPART. Setting the
+        # tax base to 0 instead would EXEMPT unverified CS fuel from carbon pricing, making
+        # non-recognition a reward rather than a penalty. Actual emissions still use the
+        # true delta[g]. Only the tax base is what the regulator can observe.
         config.t * (
             g in AVIATION_FUELS ? (
-                (g ∈ [:saf_atj_cs, :saf_hefa_cs] && !config.recognize_cs) ? 0.0 : delta[g]
+                (g == :saf_atj_cs && !config.recognize_cs) ? delta[:saf_atj_conv] :
+                (g == :saf_hefa_cs && !config.recognize_cs) ? delta[:saf_hefa_conv] :
+                delta[g]
             ) : 0.0
         ) +
         #config.t * (
@@ -846,7 +860,19 @@ function build_unified_model(params, config)
 
     # LCFS (controlled by σ)
     @constraint(model,
-        (1 - config.σ) * delta[:jet_fuel] * sum(q[g] for g in AVIATION_FUELS) -
+        # Both the allowance term and the actual-emissions term run over the SAME
+        # set: jet fuel + credit-eligible SAF. Ineligible SAF sits outside the LCFS
+        # programme entirely, so d(constraint)/dq = 0 for it, which is exactly what
+        # policy_adjustment encodes (coefficient 0.0). Summing the allowance term
+        # over all AVIATION_FUELS instead would credit ineligible SAF as if it were
+        # a zero-emission fuel while the first-order condition gave it nothing, so the
+        # constraint and the FOC would no longer describe the same problem.
+        (1 - config.σ) * delta[:jet_fuel] * (
+            q[:jet_fuel] +
+            sum(q[g] for g in SAF_GOODS if
+                         (!config.use_ci_threshold || delta[g] <= 0.5 * delta[:jet_fuel]) &&
+                         (config.recognize_cs || g ∉ [:saf_atj_cs, :saf_hefa_cs]))
+        ) -
         (delta[:jet_fuel] * q[:jet_fuel] +
          sum(delta[g] * q[g] for g in SAF_GOODS if
                                  (!config.use_ci_threshold || delta[g] <= 0.5 * delta[:jet_fuel]) &&

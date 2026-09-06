@@ -2,18 +2,37 @@
 cd(@__DIR__)
 println("Working directory: ", pwd())
 
-include(joinpath(@__DIR__, "SAFModel.jl"))
+include(joinpath(@__DIR__, "model_mkt.jl"))
 include(joinpath(@__DIR__, "analysis.jl"))
-import .SAFModel: params, build_unified_model, extract_solution,
+import .ModelMkt: params, build_unified_model, extract_solution,
     FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
-import .SAFAnalysis: calculate_emissions_detail, calculate_implicit_taxes,
-    calculate_cs_changes, calculate_ps_land_changes,
+import .Analysis: calculate_emissions_detail, calculate_implicit_taxes,
+    calculate_cs_changes, calculate_ps_land_changes, calculate_ps_nonsoy_changes,
     calculate_gr_changes, calculate_environmental_benefit,
     calculate_total_welfare
 using JLD2, DataFrames, Printf, Plots, JuMP, Statistics
 
-const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results"
-const FIGURE_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/figures"
+# Figures are reported in metric; the model stays in US units. See main/units.jl.
+include(joinpath(@__DIR__, "units.jl"))
+using .Units
+
+# Axis labels, in one place so a unit cannot be spelled two ways across the file.
+const L_FUELQ  = Units.METRIC ? "Quantity (billion liters)" : "Quantity (billion gallons)"
+const L_LAND   = Units.METRIC ? "Million Hectares" : "Million Acres"
+const L_CORNQ  = Units.METRIC ? "million tonnes" : "billion bushels"
+const L_SOYQ   = Units.METRIC ? "million tonnes" : "billion lbs"
+const L_FUELP  = Units.METRIC ? "\$/liter" : "\$/gallon"
+const L_CORNP  = Units.METRIC ? "\$/tonne (Corn)" : "\$/bushel (Corn)"
+const L_SOYP   = Units.METRIC ? "\$/tonne (Soyoil)" : "\$/lb (Soyoil)"
+const L_ITAX   = Units.METRIC ? "Implicit Tax/Subsidy (\$/liter)" :
+                                "Implicit Tax/Subsidy (\$/gallon)"
+
+include(joinpath(@__DIR__, "paths.jl"))
+using .Paths
+Paths.setup()
+
+const OUTPUT_DIR = Paths.DATA_DIR
+const FIGURE_DIR = Paths.FIGURE_DIR
 
 # =================================================================================
 # 0. Shared Constants & Helpers
@@ -22,10 +41,10 @@ const FIGURE_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-Univers
 begin
     # Meta for scenarios (policy_type, xcol, xlabel, title)
     const POLICIES = [
-        (:carbontax, :t, "Carbon Tax (\$/ton CO₂e)", "Carbon Tax"),
-        (:rfs, :θ_avi, "RFS Aviation Mandate (θ_avi)", "RFS Aviation"),
-        (:lcfs, :σ, "LCFS Standard (σ)", "LCFS"),
-        (:taxcredit, :p, "Tax Credit (\$/gallon)", "Tax Credit"),
+        (:carbontax, :t, "Carbon Tax (\$/tonne CO₂e)", "Carbon Tax"),
+        (:rfs, :θ_avi, "Volumetric mandate (θ_avi)", "Volumetric mandate"),
+        (:lcfs, :σ, "CI standard (σ)", "CI standard"),
+        (:taxcredit, :p, "Tax Credit (\$/tonne CO₂e)", "Tax Credit"),
     ]
 
     # get stringency value for each scenario
@@ -41,7 +60,7 @@ begin
     # sort scenarios by a number order
     sort_scenarios(list) = sort(list, by=s -> parse(Int, split(String(s), "_")[2]))
 
-    # add vertical lines to the plot (3B, 6B)
+    # add vertical lines to the plot (3B anchor)
     function add_vlines!(p, policy_type, vlines; y_top=nothing, annotate_y=nothing, fontsize=9)
         isnothing(vlines) && return
         haskey(vlines, policy_type) || return
@@ -65,7 +84,7 @@ begin
         t=0:0.1:700,
         θ_avi=0:0.001:0.9,
         σ=0.0:0.0003:0.5,
-        p=0:0.05:100.0
+        p=0:2.5:5000.0        # tax credit ($/ton CO2e): credit = p*(δ_jet - δ_g)
     )
 
     function create_policy_scenarios()
@@ -142,14 +161,16 @@ begin
         println("Calculating welfare components...")
         cs = calculate_cs_changes(valid, sq, params)
         ps = calculate_ps_land_changes(valid, sq, params)
+        ps_ns = calculate_ps_nonsoy_changes(valid, sq, params)
         gr = calculate_gr_changes(valid)
         env = calculate_environmental_benefit(valid, sq, scc)
-        welf = calculate_total_welfare(cs, ps, gr, env)
+        welf = calculate_total_welfare(cs, ps, gr, env; ps_nonsoy_changes=ps_ns)
 
         return (
             solutions=valid,
             cs_changes=cs,
             ps_land_changes=ps,
+            ps_nonsoy_changes=ps_ns,
             gr_changes=gr,
             env_benefits=env,
             welfare_summary=welf,
@@ -164,13 +185,49 @@ begin
     end
 end
 
-# Run
-all_results, all_solutions = run_extended_analysis(params, EXTENDED_POLICY_MATRIX)
-results_extended_analysis = calculate_extended_welfare_analysis(
-    all_solutions, EXTENDED_POLICY_MATRIX, params, scc=190.0)
+# Run (grid cache)
+#
+# The grid holds about 12,000 points and takes a while to solve, yet the common edit is a
+# figure color or an axis followed by a re-run. So the solutions are stored with a spec
+# (policy grid + unit setting + version), and a matching spec on the next run is read back
+# instead of re-solved. Same approach as fig_rpm_lcfs.jl / fig_stacked_paths.jl.
+#
+# A different spec re-solves automatically: POLICY_RANGES widened, Units.METRIC flipped,
+# or CACHE_VERSION bumped.
+#
+# Note: changes to the model itself are NOT part of the spec. After editing model_mkt.jl,
+# bump CACHE_VERSION or the old solutions are reused.
+const CACHE_FILE = "results_extended.jld2"
+const CACHE_VERSION = 1
 
-@save joinpath(OUTPUT_DIR, "results_extended.jld2") results_extended_analysis
-println("✓ Saved results_extended.jld2")
+function load_or_build_extended()
+    cache_path = joinpath(OUTPUT_DIR, CACHE_FILE)
+    want = (ranges=POLICY_RANGES, v=CACHE_VERSION, metric=Units.METRIC, scc=190.0)
+
+    if isfile(cache_path)
+        cached = JLD2.load(cache_path)
+        if haskey(cached, "results_extended_analysis") && get(cached, "spec", nothing) == want
+            println("Cache reused: ", cache_path)
+            return cached["results_extended_analysis"]
+        end
+        # A file with no spec at all was written before this cache existed. There is no way
+        # to tell whether those solutions match the current model, so they are not reused.
+        println("Cache does not match the current spec, or has none, recomputing.")
+    end
+
+    t0 = time()
+    _, all_solutions = run_extended_analysis(params, EXTENDED_POLICY_MATRIX)
+    res = calculate_extended_welfare_analysis(
+        all_solutions, EXTENDED_POLICY_MATRIX, params, scc=190.0)
+    @printf("Grid computation %.1f s\n", time() - t0)
+
+    spec = want
+    @save cache_path results_extended_analysis = res spec
+    println("Saved: ", cache_path)
+    return res
+end
+
+results_extended_analysis = load_or_build_extended()
 
 # =================================================================================
 # 3. MAC Calculation
@@ -244,18 +301,39 @@ end
 # =================================================================================
 
 begin
-    @load joinpath(OUTPUT_DIR, "results_target.jld2") equivalent_policies
-    ep_3B = equivalent_policies
-    @load joinpath(OUTPUT_DIR, "results_target_6.jld2") equivalent_policies
-    ep_6B = equivalent_policies
+    # There is one baseline, the anchor of unified_benchmark.jl (3B).
+    #
+    # Earlier this read two anchors, 3B and 6B, from results_target.jld2 /
+    # results_target_6.jld2 written by run_model.jl. Deleting run_model.jl dropped 6B as
+    # well: the tables and every other figure key off the single 3B anchor, so drawing two
+    # lines here alone would read as two baselines.
+    @load joinpath(OUTPUT_DIR, "results_unified_benchmark.jld2") all_case_results
+
+    # case1 = no CS crediting, no CI threshold. It is the case the RFS benchmark itself
+    # belongs to, and the only one holding all four policies below.
+    ep_3B = all_case_results[:case1].equivalent_policies
 
     statusquo_em = results_extended_analysis.solutions[:statusquo].emissions.total
     abatement_3B = statusquo_em - ep_3B[:rfs].actual_emission
-    abatement_6B = statusquo_em - ep_6B[:rfs].actual_emission
-    vlines_abatement = [(abatement_3B, "3B"), (abatement_6B, "6B")]
+    vlines_abatement = [(abatement_3B, "3B")]
 
-    vlines_data = Dict(pt => [(ep_3B[pt].policy_value, "3B"), (ep_6B[pt].policy_value, "6B")]
+    vlines_data = Dict(pt => [(ep_3B[pt].policy_value, "3B")]
                        for pt in [:carbontax, :rfs, :lcfs, :taxcredit]
+    )
+
+    # x axis limit. How far the figure is drawn, a different job from the vertical line.
+    #
+    # This used to take policy_value from the 6B anchor, which was wrong. The tax credit p
+    # of the old run_model.jl is $/gal while this file's grid is $/ton CO2e (POLICY_RANGES.p
+    # is 0:2.5:5000). The taxcredit panel therefore had an upper limit of 20.16 and drew
+    # 0.4% of the grid. Two numbers in different units had been glued together.
+    #
+    # It is now a multiple of the 3B anchor from the same file. Units cannot drift, and
+    # widening or narrowing is this one number. 3.0 stays inside POLICY_RANGES for all four
+    # policies (carbontax 324<700, rfs 0.85<0.9, lcfs 0.18<0.5, taxcredit 1954<5000).
+    XMAX_MULT = 3.0
+    xmax_map = Dict(pt => XMAX_MULT * ep_3B[pt].policy_value
+                    for pt in [:carbontax, :rfs, :lcfs, :taxcredit]
     )
 end
 
@@ -270,8 +348,8 @@ function plot_mac_comparison_simple(results_extended_analysis, mac_extended;
     bg = RGB(0.96, 0.96, 0.94)
     policy_colors = [(:carbontax, :blue), (:rfs, :red),
         (:lcfs, :green), (:taxcredit, :purple)]
-    policy_labels = Dict(:carbontax => "Carbon Tax", :rfs => "RFS Aviation",
-        :lcfs => "LCFS", :taxcredit => "Tax Credit")
+    policy_labels = Dict(:carbontax => "Carbon Tax", :rfs => "Volumetric mandate",
+        :lcfs => "CI standard", :taxcredit => "Tax Credit")
     plot_data = Dict()
     for (pt, _) in policy_colors
         data = pt in [:taxcredit, :lcfs] ? mac_extended[pt][1:end] : mac_extended[pt]
@@ -284,8 +362,8 @@ function plot_mac_comparison_simple(results_extended_analysis, mac_extended;
     end
     function make_panel(key, title, show_y)
         p = plot(title=title, titlefontsize=20, titlefontweight=:bold,
-            ylabel=show_y ? "MAC (\$/ton CO₂)" : "",
-            xlabel="Cumulative Abatement (Million tons CO₂)",
+            ylabel=show_y ? "MAC (\$/tonne CO₂)" : "",
+            xlabel="Cumulative Abatement (Mt CO₂e)",
             legend=false, grid=true,
             xlims=(0, max_ab * 1000), ylims=(y_min, y_max),
             yticks=collect(-200:200.0:y_max),
@@ -342,7 +420,8 @@ function results_to_dataframe(extended_analysis, policy_configs, mac_extended)
     end
     for col in [:p_avi, :p_gas, :p_die, :r_land,
         :emission_avi, :emission_road, :emission_food, :emission_total,
-        :cs_change, :ps_land_change, :gr_change, :env_benefit, :private_surplus, :social_welfare,
+        :cs_change, :ps_land_change, :ps_nonsoy_change, :ps_total_change,
+        :gr_change, :env_benefit, :private_surplus, :social_welfare,
         :mac_private, :mac_social]
         df[!, col] = Float64[]
     end
@@ -364,10 +443,11 @@ function results_to_dataframe(extended_analysis, policy_configs, mac_extended)
         append!(row, [sol.emissions.aviation * 1000, sol.emissions.road * 1000,
             sol.emissions.food * 1000, sol.emissions.total * 1000])
         if name == :statusquo
-            append!(row, zeros(6))
+            append!(row, zeros(8))
         else
             w = welfare_summary[name]
-            append!(row, [w.cs_change, w.ps_land_change, w.gr_change,
+            append!(row, [w.cs_change, w.ps_land_change, w.ps_nonsoy_change,
+                w.ps_total_change, w.gr_change,
                 w.env_benefit, w.private_surplus, w.social_welfare])
         end
 
@@ -379,8 +459,21 @@ function results_to_dataframe(extended_analysis, policy_configs, mac_extended)
     return df
 end
 
+# One conversion for every plot that reads `results_df`. Emissions are already in Mt
+# (results_to_dataframe multiplies the B tonne solution by 1000), welfare is B$ and the
+# MAC is $/tonne CO2e, so none of those columns appear here.
+const RESULTS_DF_UNITS = vcat(
+    [Symbol("q_$f") => "B gal" for f in
+        [:jet_fuel, :saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs,
+         :saf_hefa_nonsoy, :gasoline, :ethanol, :diesel, :biodiesel_soy,
+         :biodiesel_nonsoy, :rd_soy, :rd_nonsoy]],
+    [:x_avi => "B RPM", :x_gas => "B VMT", :x_die => "B VMT",
+     :x_corn => "B bushel", :x_soyoil => "B lb",          # x_soymeal is already MMT
+     :p_avi => "\$/RPM", :p_gas => "\$/VMT", :p_die => "\$/VMT",
+     :r_land => "\$/acre"])
+
 results_df = results_to_dataframe(results_extended_analysis, EXTENDED_POLICY_MATRIX, mac_extended)
-#@save joinpath(OUTPUT_DIR, "extended_policy_results.jld2") results_df
+Units.convert_cols!(results_df, RESULTS_DF_UNITS)
 
 # =================================================================================
 # 7. Plot Functions
@@ -402,8 +495,11 @@ function plot_land_use_stacked_by_policy(results_extended_analysis; vlines=nothi
     solutions = results_extended_analysis.solutions
     omega = params.coeff.omega
 
+    # l_n / l_cs are billion acres; *1000 makes million acres, then acre -> ha.
+    acres(x) = Units.acre_to_ha(x * 1000)
+
     all_max = maximum(
-        (solutions[s].l_n + solutions[s].l_cs) * 1000
+        acres(solutions[s].l_n + solutions[s].l_cs)
         for s in keys(solutions) if !isnothing(solutions[s])
     )
     ylims_fixed = (0, all_max * 1.1)
@@ -414,10 +510,10 @@ function plot_land_use_stacked_by_policy(results_extended_analysis; vlines=nothi
         sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
         xs = [get_x(s, policy_type) for s in sorted if !isnothing(solutions[s])]
 
-        total_n = [(solutions[s].l_n) * 1000 for s in sorted if !isnothing(solutions[s])]
-        total_cs = [(solutions[s].l_cs) * 1000 for s in sorted if !isnothing(solutions[s])]
+        total_n = [acres(solutions[s].l_n) for s in sorted if !isnothing(solutions[s])]
+        total_cs = [acres(solutions[s].l_cs) for s in sorted if !isnothing(solutions[s])]
 
-        p = plot(xlabel=xlabel, ylabel="Million Acres",
+        p = plot(xlabel=xlabel, ylabel=L_LAND,
             title=title, titlefontsize=22, titlefontweight=:bold,
             legend=false, grid=true,
             xlims=extrema(xs), ylims=ylims_fixed,
@@ -461,10 +557,10 @@ function plot_fuel_production_stacked(results_df, fuel_config; vlines=nothing)
         df = sort(filter(r -> r.policy_type == String(policy_type), results_df), xcol)
         x_vals = df[!, xcol]
         x_min = minimum(x_vals)
-        x_max = ep_6B[policy_type].policy_value
+        x_max = xmax_map[policy_type]
         biofuel_sorted = fuel_config.biofuel_types
 
-        p = plot(xlabel=xlabel, ylabel=show_ylabel ? "Quantity (billion gallons)" : "", title=title,
+        p = plot(xlabel=xlabel, ylabel=show_ylabel ? L_FUELQ : "", title=title,
             titlefontsize=30, titlefontweight=:bold, legend=false, grid=true,
             xlims=(x_min, x_max), ylims=fuel_config.ylims,
             margin=10Plots.mm, guidefontsize=30,
@@ -517,27 +613,32 @@ function plot_food_products_by_policy(results_extended_analysis; vlines=nothing)
     for (policy_type, _, xlabel, title) in POLICIES
         scenario_list = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
         xs = [get_x(s, policy_type) for s in scenario_list]
-        ddgs = [0.092 * solutions[s].q[:ethanol] +
-                0.159 * (solutions[s].q[:saf_atj_conv] + solutions[s].q[:saf_atj_cs])
+        # DDGS is in corn-bushel EQUIVALENTS (it is netted against x[:corn]), so it takes
+        # the corn factor, not a DDGS bulk density. Soybean meal is already MMT.
+        ddgs = [Units.bu_to_Mt(0.092 * solutions[s].q[:ethanol] +
+                               0.159 * (solutions[s].q[:saf_atj_conv] + solutions[s].q[:saf_atj_cs]))
                 for s in scenario_list]
-        corn_t = [solutions[s].x[:corn] for s in scenario_list]
-        soy_oil = [solutions[s].x[:soyoil] for s in scenario_list]
+        corn_t = [Units.bu_to_Mt(solutions[s].x[:corn]) for s in scenario_list]
+        soy_oil = [Units.lb_to_Mt(solutions[s].x[:soyoil]) for s in scenario_list]
         soy_meal = [solutions[s].x[:soymeal] for s in scenario_list]
+
+        corn_ymax = Units.bu_to_Mt(15.0)
+        soy_ymax = Units.lb_to_Mt(15.0)
 
         common_kw = (xlabel=xlabel, titlefontsize=25, titlefontweight=:bold,
             legend=false, grid=true, xlims=extrema(xs),
             left_margin=20Plots.mm, bottom_margin=10Plots.mm,
             guidefontsize=20, tickfontsize=18)
 
-        p_c = plot(; title=title, ylabel="billion bushels", ylims=(0, 15), common_kw...)
+        p_c = plot(; title=title, ylabel=L_CORNQ, ylims=(0, corn_ymax), common_kw...)
         plot!(p_c, xs, corn_t .- ddgs, linewidth=4, color=:orange)
         plot!(p_c, xs, corn_t, linewidth=4, color=:red)
-        add_vlines!(p_c, policy_type, vlines; annotate_y=14.5)
+        add_vlines!(p_c, policy_type, vlines; annotate_y=corn_ymax * 0.967)
         push!(corn_plots, p_c)
 
-        p_o = plot(; title=title, ylabel="billion lbs", ylims=(0, 15), common_kw...)
+        p_o = plot(; title=title, ylabel=L_SOYQ, ylims=(0, soy_ymax), common_kw...)
         plot!(p_o, xs, soy_oil, linewidth=4, color=:darkgreen)
-        add_vlines!(p_o, policy_type, vlines; annotate_y=14.5)
+        add_vlines!(p_o, policy_type, vlines; annotate_y=soy_ymax * 0.967)
         push!(oil_plots, p_o)
 
         p_m = plot(; title=title, ylabel="MMT", ylims=(0, 80), common_kw...)
@@ -575,14 +676,18 @@ function plot_welfare_summary_by_policy(results_extended_analysis; vlines=nothin
         plot!(p[idx], xs, [w.cs_change for w in ws], label="CS", linewidth=2, color=:steelblue,
             xlabel=xlabel, ylabel="Welfare Change (B\$)", title=title,
             titlefontsize=16, titlefontweight=:bold, legend=:best, legendfontsize=10)
-        plot!(p[idx], xs, [w.ps_land_change for w in ws], label="PS", linewidth=2, color=:orange)
+        plot!(p[idx], xs, [w.ps_land_change for w in ws], label="PS (Land)", linewidth=2, color=:orange)
+        plot!(p[idx], xs, [w.ps_nonsoy_change for w in ws], label="PS (Non-soy)", linewidth=2,
+            linestyle=:dash, color=:brown)
+        plot!(p[idx], xs, [w.ps_total_change for w in ws], label="PS (Total)", linewidth=2, color=:darkorange)
         policy_type in [:carbontax, :taxcredit] &&
             plot!(p[idx], xs, [w.gr_change for w in ws], label="Govt Revenue", linewidth=2, color=:green)
         plot!(p[idx], xs, [w.private_surplus for w in ws], label="Private", linewidth=3, linestyle=:dot, color=:purple)
         plot!(p[idx], xs, [w.social_welfare for w in ws], label="Social", linewidth=3, linestyle=:dot, color=:red)
         hline!(p[idx], [0], color=:gray, linestyle=:dot, label="", alpha=0.5)
 
-        y_top = maximum(vcat([w.cs_change, w.ps_land_change, w.private_surplus, w.social_welfare] for w in ws)...)
+        y_top = maximum(vcat([w.cs_change, w.ps_land_change, w.ps_nonsoy_change,
+            w.ps_total_change, w.private_surplus, w.social_welfare] for w in ws)...)
         add_vlines!(p[idx], policy_type, vlines; annotate_y=y_top * 0.95)
     end
     return p
@@ -626,7 +731,7 @@ function plot_emissions_stacked_broken_axis(results_extended_analysis;
         xl = extrema(xs)
 
         p_top = plot(title=title, titlefontsize=16, titlefontweight=:bold,
-            ylabel="Billion ton CO₂e", legend=false, grid=true,
+            ylabel="Billion tonne CO₂e", legend=false, grid=true,
             xlims=xl, ylims=(break_point, y_max), xticks=:none,
             bottom_margin=-4Plots.mm, top_margin=8Plots.mm, left_margin=18Plots.mm,
             guidefontsize=12, tickfontsize=10)
@@ -663,7 +768,7 @@ function plot_prices_by_policy(results_extended_analysis, fuel_info, ppu_fn,
     for (policy_type, _, xlabel, title) in POLICIES
         sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
 
-        p = plot(xlabel=xlabel, ylabel="\$/gallon", title="Title",
+        p = plot(xlabel=xlabel, ylabel=L_FUELP, title="Title",
             titlefontsize=22, titlefontweight=:bold, legend=false, grid=true,
             ylims=left_ylims, left_margin=18Plots.mm, bottom_margin=12Plots.mm,
             right_margin=22Plots.mm, top_margin=8Plots.mm,
@@ -718,17 +823,21 @@ function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothi
     soyoil_info = [(:feedstock_soy_n, "Soyoil (Conv)", :darkgreen, :solid),
         (:feedstock_soy_cs, "Soyoil (CS)", :darkgreen, :dash)]
 
+    # Corn is priced per bushel and soy oil per pound; both become $/tonne.
+    pcorn(v) = Units.price_bu_to_t(v)
+    psoy(v) = Units.price_lb_to_t(v)
+
     valid_sols = [sol for sol in values(solutions) if !isnothing(sol)]
-    CORN_YLIMS = (floor(minimum(s.p_f[k] for s in valid_sols for (k, _, _, _) in corn_info)),
-        ceil(maximum(s.p_f[k] for s in valid_sols for (k, _, _, _) in corn_info)))
-    SOYOIL_YLIMS = (floor(minimum(s.p_f[k] for s in valid_sols for (k, _, _, _) in soyoil_info)),
-        ceil(maximum(s.p_f[k] for s in valid_sols for (k, _, _, _) in soyoil_info)))
+    CORN_YLIMS = (floor(minimum(pcorn(s.p_f[k]) for s in valid_sols for (k, _, _, _) in corn_info)),
+        ceil(maximum(pcorn(s.p_f[k]) for s in valid_sols for (k, _, _, _) in corn_info)))
+    SOYOIL_YLIMS = (floor(minimum(psoy(s.p_f[k]) for s in valid_sols for (k, _, _, _) in soyoil_info)),
+        ceil(maximum(psoy(s.p_f[k]) for s in valid_sols for (k, _, _, _) in soyoil_info)))
 
     plots_list = []
     for (policy_type, _, xlabel, title) in POLICIES
         sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
 
-        p = plot(xlabel=xlabel, ylabel="\$/bushel (Corn)", title=title,
+        p = plot(xlabel=xlabel, ylabel=L_CORNP, title=title,
             yguidefontcolor=:darkorange,
             titlefontsize=22, titlefontweight=:bold, legend=false, grid=true,
             ylims=CORN_YLIMS, left_margin=18Plots.mm, bottom_margin=12Plots.mm,
@@ -742,7 +851,7 @@ function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothi
                 isnothing(sol) && continue
                 key == :feedstock_corn_cs && sol.q_feedstock[:corn_cs] <= 1e-6 && continue
                 push!(xs, get_x(s, policy_type))
-                push!(ps, sol.p_f[key])
+                push!(ps, pcorn(sol.p_f[key]))
             end
             isempty(xs) && continue
             plot!(p, xs, ps, linewidth=3, color=color, linestyle=lstyle)
@@ -750,7 +859,7 @@ function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothi
         add_vlines!(p, policy_type, vlines; annotate_y=CORN_YLIMS[2] * 0.96)
 
         pr = Plots.twinx(p)
-        plot!(pr, ylabel="\$/lb (Soyoil)", yguidefontcolor=:darkgreen,
+        plot!(pr, ylabel=L_SOYP, yguidefontcolor=:darkgreen,
             ylims=SOYOIL_YLIMS, guidefontsize=20, tickfontsize=14, legend=false, grid=false)
         for (key, _, color, lstyle) in soyoil_info
             xs, ps = Float64[], Float64[]
@@ -759,7 +868,7 @@ function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothi
                 isnothing(sol) && continue
                 key == :feedstock_soy_cs && sol.q_feedstock[:soy_cs] <= 1e-6 && continue
                 push!(xs, get_x(s, policy_type))
-                push!(ps, sol.p_f[key])
+                push!(ps, psoy(sol.p_f[key]))
             end
             isempty(xs) && continue
             plot!(pr, xs, ps, linewidth=3, color=color, linestyle=lstyle)
@@ -785,8 +894,15 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
         (:saf_hefa_cs, "CS HEFA-SAF", :orange, :solid), (:saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple, :solid)]
     RFS_GROUP = [:saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
 
+    # STALE RANGE, PRE-EXISTING: the :taxcredit x limit of 75 dates from when config.p was
+    # $/gal. It is now $/ton CO2e and the grid runs to 5000 (see the p grid in section 1),
+    # so this panel shows only the first ~1.5% of the swept range. Left as-is rather than
+    # guessed at -- it changes what the figure displays, which is an editorial call.
     xlims_map = Dict(:carbontax => (0.0, 700.0), :rfs => (0.0, 0.9), :lcfs => (0.0, 0.5), :taxcredit => (0.0, 75.0))
-    ylims_map = Dict(:carbontax => (0.0, 10.0), :rfs => (-5.0, 2.0), :lcfs => (-10.0, 10.0), :taxcredit => (-55.0, 1.0))
+    # y limits are implicit tax in $/gal, so they convert with the series.
+    ylims_map = Dict(k => Units.price_gal_to_L.(v) for (k, v) in Dict(
+        :carbontax => (0.0, 10.0), :rfs => (-5.0, 2.0),
+        :lcfs => (-10.0, 10.0), :taxcredit => (-55.0, 1.0)))
     it_key_map = Dict(:carbontax => :carbon_tax, :rfs => :rfs_avi, :lcfs => :lcfs, :taxcredit => :tax_credit)
 
     plots_list = []
@@ -797,7 +913,7 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
         it_key = it_key_map[policy_type]
         THRESH = (ylims_cur[2] - ylims_cur[1]) * 0.05
 
-        p = plot(xlabel=xlabel, ylabel="Implicit Tax/Subsidy (\$/gallon)", title=title,
+        p = plot(xlabel=xlabel, ylabel=L_ITAX, title=title,
             titlefontsize=28, titlefontweight=:bold, legend=false, grid=true,
             xlims=xlims_cur, ylims=ylims_cur,
             left_margin=22Plots.mm, bottom_margin=15Plots.mm,
@@ -823,14 +939,14 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
                 isnothing(xval) && continue
                 xlims_cur[1] <= xval <= xlims_cur[2] || continue
                 push!(xs, xval)
-                push!(its, sol.implicit_taxes[g][it_key])
+                push!(its, Units.price_gal_to_L(sol.implicit_taxes[g][it_key]))
             end
             isempty(xs) && continue
             series_data[g] = (xs, its)
             plot!(p, xs, its, linewidth=3.0, color=color, linestyle=lstyle)
         end
 
-        # RFS: 나머지 SAF 대표값
+        # RFS: representative value for the remaining SAF
         if policy_type == :rfs
             g_rep = RFS_GROUP[1]
             xs, its = Float64[], Float64[]
@@ -841,7 +957,7 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
                 isnothing(sol.implicit_taxes) && continue
                 !haskey(sol.implicit_taxes, g_rep) && continue
                 push!(xs, get_x(s, policy_type))
-                push!(its, sol.implicit_taxes[g_rep][it_key])
+                push!(its, Units.price_gal_to_L(sol.implicit_taxes[g_rep][it_key]))
             end
             if !isempty(xs)
                 series_data[:all_other_saf] = (xs, its)
@@ -849,7 +965,7 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
             end
         end
 
-        # 끝점 라벨 (overlap 보정)
+        # End-point labels (overlap adjusted)
         endpoint_vals = Dict(g => itvals[sortperm(xs)[end]]
                              for (g, (xs, itvals)) in series_data if !isempty(xs))
         if !isempty(endpoint_vals)
@@ -885,87 +1001,24 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
 end
 display(plot_implicit_tax_by_policy(results_extended_analysis; vlines=vlines_data))
 
-# non soy
-
-function plot_nonsoy_price_by_policy(results_extended_analysis; vlines=nothing)
-    solutions = results_extended_analysis.solutions
-
-    plots_list = []
-    for (policy_type, _, xlabel, title) in POLICIES
-        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
-        xs = Float64[]
-        ys = Float64[]
-        for s in sorted
-            sol = solutions[s]
-            isnothing(sol) && continue
-            push!(xs, get_x(s, policy_type))
-            push!(ys, sol.p_f[:feedstock_nonsoy])
-        end
-
-        p = plot(xlabel=xlabel, ylabel="\$/lb", title=title,
-            titlefontsize=18, titlefontweight=:bold,
-            legend=false, grid=true,
-            left_margin=15Plots.mm, bottom_margin=12Plots.mm,
-            guidefontsize=16, tickfontsize=13)
-        plot!(p, xs, ys, linewidth=2.5, color=:purple)
-        hline!(p, [0.49], color=:gray, linestyle=:dash, linewidth=1.5, label="baseline")
-        add_vlines!(p, policy_type, vlines; annotate_y=maximum(ys) * 0.97)
-        push!(plots_list, p)
-    end
-
-    return plot(plots_list..., layout=(2, 2), size=(2000, 1400),
-        plot_title="Non-soy Feedstock Price by Policy Stringency",
-        plot_titlefontsize=20, plot_titlefontweight=:bold, margin=10Plots.mm)
-end
-
-display(plot_nonsoy_price_by_policy(results_extended_analysis; vlines=vlines_data))
-
-function plot_nonsoy_quantity_by_policy(results_extended_analysis; vlines=nothing)
-    solutions = results_extended_analysis.solutions
-
-    plots_list = []
-    for (policy_type, _, xlabel, title) in POLICIES
-        sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
-        xs = Float64[]
-        ys = Float64[]
-        for s in sorted
-            sol = solutions[s]
-            isnothing(sol) && continue
-            push!(xs, get_x(s, policy_type))
-            push!(ys, sol.q_feedstock[:nonsoy])
-        end
-
-        p = plot(xlabel=xlabel, ylabel="Billion lb", title=title,
-            titlefontsize=18, titlefontweight=:bold,
-            legend=false, grid=true,
-            left_margin=15Plots.mm, bottom_margin=12Plots.mm,
-            guidefontsize=16, tickfontsize=13)
-        plot!(p, xs, ys, linewidth=2.5, color=:purple)
-        hline!(p, [28.97], color=:gray, linestyle=:dash, linewidth=1.5, label="baseline")
-        add_vlines!(p, policy_type, vlines; annotate_y=maximum(ys) * 0.97)
-        push!(plots_list, p)
-    end
-
-    return plot(plots_list..., layout=(2, 2), size=(2000, 1400),
-        plot_title="Non-soy Feedstock Quantity by Policy Stringency",
-        plot_titlefontsize=20, plot_titlefontweight=:bold, margin=10Plots.mm)
-end
-
-display(plot_nonsoy_quantity_by_policy(results_extended_analysis; vlines=vlines_data))
 
 # ── Dual variables ─────────────────────────────────────────────────────────
 function plot_dual_variables_by_policy(results_extended_analysis; vlines=nothing)
     solutions = results_extended_analysis.solutions
+    # Each multiplier inherits the unit of its own constraint: the RFS and both blend
+    # walls are written in B gal, so all three are $/gal -> $/L. (λ_nonsoy_capacity would
+    # be $/lb -> $/tonne, and λ_lcfs $/tonne CO2e unchanged, if re-enabled.)
+    dual_unit = Units.METRIC ? " (\$/L)" : " (\$/gal)"
     dual_info = [
-        (:λ_rfs, "λ RFS D6", :steelblue),
-        (:λ_blendwall_ethanol, "λ Blendwall (Ethanol)", :orange),
-        (:λ_blendwall_biodiesel, "λ Blendwall (Biodiesel)", :green),
-        #(:λ_nonsoy_capacity, "λ Non-soy Capacity", :red),
+        (:λ_rfs, "λ RFS D6 (road)" * dual_unit, :steelblue, Units.price_gal_to_L),
+        (:λ_blendwall_ethanol, "λ Blendwall (Ethanol)" * dual_unit, :orange, Units.price_gal_to_L),
+        (:λ_blendwall_biodiesel, "λ Blendwall (Biodiesel)" * dual_unit, :green, Units.price_gal_to_L),
+        #(:λ_nonsoy_capacity, "λ Non-soy Capacity", :red, Units.price_lb_to_t),
     ]
 
     all_plots = []
 
-    for (dual_key, dual_label, dual_color) in dual_info
+    for (dual_key, dual_label, dual_color, dual_conv) in dual_info
         for (policy_type, _, xlabel, pol_title) in POLICIES
             sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
             xs = Float64[]
@@ -974,14 +1027,15 @@ function plot_dual_variables_by_policy(results_extended_analysis; vlines=nothing
                 sol = solutions[s]
                 isnothing(sol) && continue
                 push!(xs, get_x(s, policy_type))
-                push!(ys, getfield(sol.duals, dual_key))
+                push!(ys, dual_conv(getfield(sol.duals, dual_key)))
             end
 
             row_idx = findfirst(d -> d[1] == dual_key, dual_info)
             col_idx = findfirst(p -> p[1] == policy_type, POLICIES)
 
-            # λ_blendwall_biodiesel 행에만 y축 범위 고정
-            ylims_val = dual_key == :λ_blendwall_biodiesel ? (0.0, 0.1) : :auto
+            # Fix the y range on the lambda_blendwall_biodiesel row only
+            ylims_val = dual_key == :λ_blendwall_biodiesel ?
+                        Units.price_gal_to_L.((0.0, 0.1)) : :auto
 
             p = plot(
                 xlabel=row_idx == length(dual_info) ? xlabel : "",
@@ -1017,22 +1071,22 @@ end
 
 # ── Aviation/Gasoline/Diesel stacked quantity plots ──────────────────────────
 aviation_config = (
-    main_fuel=:q_jet_fuel, main_fuel_label="Jet Fuel", ylims=(0, 23),
+    main_fuel=:q_jet_fuel, main_fuel_label="Jet Fuel", ylims=Units.gal_to_L.((0, 23)),
     biofuel_types=[
+        (:q_saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple),
         (:q_saf_hefa_cs, "Climate-Smart HEFA-SAF", :orange),
         (:q_saf_hefa_conv, "Conventional HEFA-SAF", :green),
         (:q_saf_atj_cs, "Climate-Smart ATJ-SAF", :red),
-        (:q_saf_atj_conv, "Conventional ATJ-SAF", :blue),
-        (:q_saf_hefa_nonsoy, "Non-soy HEFA-SAF", :purple)],
+        (:q_saf_atj_conv, "Conventional ATJ-SAF", :blue)],
     plot_title="Aviation Fuel Production by Policy Stringency", legendcolumns=3)
 
 gasoline_config = (
-    main_fuel=:q_gasoline, main_fuel_label="Gasoline", ylims=(0, 160),
+    main_fuel=:q_gasoline, main_fuel_label="Gasoline", ylims=Units.gal_to_L.((0, 160)),
     biofuel_types=[(:q_ethanol, "Ethanol", :red)],
     plot_title="Road Gasoline Fuel Production by Policy Stringency", legendcolumns=2)
 
 diesel_config = (
-    main_fuel=:q_diesel, main_fuel_label="Diesel", ylims=(30, 55),
+    main_fuel=:q_diesel, main_fuel_label="Diesel", ylims=Units.gal_to_L.((30, 55)),
     biofuel_types=[(:q_rd_soy, "Soy RD", :red), (:q_rd_nonsoy, "Non-soy RD", :green),
         (:q_biodiesel_soy, "Soy Biodiesel", :blue), (:q_biodiesel_nonsoy, "Non-soy Biodiesel", :purple)],
     plot_title="Diesel Fuel Production by Policy Stringency", legendcolumns=3)
@@ -1068,23 +1122,36 @@ display(plot_prices_by_policy(results_extended_analysis,
     [(:jet_fuel, "Jet Fuel", :black, true), (:saf_atj_conv, "ATJ(Conv)", :blue, false),
         (:saf_atj_cs, "ATJ(CS)", :dodgerblue, false), (:saf_hefa_conv, "HEFA(Conv)", :green, false),
         (:saf_hefa_cs, "HEFA(CS)", :limegreen, false), (:saf_hefa_nonsoy, "HEFA(Non-soy)", :purple, false)],
-    (sol, g) -> r_e[:jet_fuel] * (g == :jet_fuel ? 1.0 : β[(:saf, :jet_fuel)]) * sol.p_c[:avi],
-    (0, 15), sol -> sol.p_c[:avi], (0.0, 0.3), "\$/aviation mile", :red, "Aviation Mile Price",
+    (sol, g) -> Units.price_gal_to_L(
+        r_e[:jet_fuel] * (g == :jet_fuel ? 1.0 : β[(:saf, :jet_fuel)]) * sol.p_c[:avi]),
+    Units.price_gal_to_L.((0, 15)),
+    sol -> Units.price_mile_to_km(sol.p_c[:avi]),
+    Units.price_mile_to_km.((0.0, 0.3)),
+    Units.METRIC ? "\$/passenger-km" : "\$/aviation mile", :red,
+    Units.METRIC ? "Aviation passenger-km Price" : "Aviation Mile Price",
     ""; vlines=vlines_data))
 
 display(plot_prices_by_policy(results_extended_analysis,
     [(:gasoline, "Gasoline", :black, true), (:ethanol, "Ethanol", :red, false)],
-    (sol, g) -> r_e[:gasoline] * (g == :gasoline ? 1.0 : β[(:ethanol, :gasoline)]) * sol.p_c[:gas],
-    (0, 4), sol -> sol.p_c[:gas], (0.0, 1.0), "\$/gasoline mile", :orange, "Gasoline Consumer Price",
+    (sol, g) -> Units.price_gal_to_L(
+        r_e[:gasoline] * (g == :gasoline ? 1.0 : β[(:ethanol, :gasoline)]) * sol.p_c[:gas]),
+    Units.price_gal_to_L.((0, 4)),
+    sol -> Units.price_mile_to_km(sol.p_c[:gas]),
+    Units.price_mile_to_km.((0.0, 1.0)),
+    Units.METRIC ? "\$/gasoline vehicle-km" : "\$/gasoline mile", :orange, "Gasoline Consumer Price",
     ""; vlines=vlines_data))
 
 display(plot_prices_by_policy(results_extended_analysis,
     [(:diesel, "Diesel", :black, true), (:rd_soy, "Soy RD", :red, false),
         (:rd_nonsoy, "Non-Soy RD", :orange, false), (:biodiesel_soy, "Soy Biodiesel", :blue, false),
         (:biodiesel_nonsoy, "Non-Soy Biodiesel", :purple, false)],
-    (sol, g) -> r_e[:diesel] * (g == :diesel ? 1.0 : g in (:biodiesel_soy, :biodiesel_nonsoy) ?
-                                                     β[(:biodiesel, :diesel)] : β[(:rd, :diesel)]) * sol.p_c[:die],
-    (0, 6.5), sol -> sol.p_c[:die], (0.0, 2.0), "\$/diesel mile", :brown, "Diesel Consumer Price",
+    (sol, g) -> Units.price_gal_to_L(
+        r_e[:diesel] * (g == :diesel ? 1.0 : g in (:biodiesel_soy, :biodiesel_nonsoy) ?
+                                             β[(:biodiesel, :diesel)] : β[(:rd, :diesel)]) * sol.p_c[:die]),
+    Units.price_gal_to_L.((0, 6.5)),
+    sol -> Units.price_mile_to_km(sol.p_c[:die]),
+    Units.price_mile_to_km.((0.0, 2.0)),
+    Units.METRIC ? "\$/diesel vehicle-km" : "\$/diesel mile", :brown, "Diesel Consumer Price",
     ""; vlines=vlines_data))
 
 
@@ -1103,11 +1170,13 @@ function plot_policy_specific_duals(results_extended_analysis; vlines=nothing)
     # RFS
     rfs_sorted = sort_scenarios(results_extended_analysis.scenario_groups[:rfs])
     rfs_xs = [get_x(s, :rfs) for s in rfs_sorted if !isnothing(solutions[s])]
-    rfs_ys = [solutions[s].duals.λ_rfs_avi for s in rfs_sorted if !isnothing(solutions[s])]
+    rfs_ys = [Units.price_gal_to_L(solutions[s].duals.λ_rfs_avi)
+              for s in rfs_sorted if !isnothing(solutions[s])]
 
     p_rfs = plot(
-        xlabel="RFS Aviation Mandate (θ_avi)", ylabel="λ RFS Aviation",
-        title="RFS Dual Variable", titlefontsize=22, titlefontweight=:bold,
+        xlabel="Volumetric mandate (θ_avi)",
+        ylabel="λ Volumetric mandate ($(Units.METRIC ? "\$/L" : "\$/gal"))",
+        title="Volumetric mandate Dual Variable", titlefontsize=22, titlefontweight=:bold,
         legend=false, grid=true,
         linewidth=3, color=:steelblue, marker=:circle, markersize=6,
         left_margin=18Plots.mm, bottom_margin=15Plots.mm,
@@ -1126,8 +1195,9 @@ function plot_policy_specific_duals(results_extended_analysis; vlines=nothing)
     lcfs_ys = [solutions[s].duals.λ_lcfs for s in lcfs_sorted if !isnothing(solutions[s])]
 
     p_lcfs = plot(
-        xlabel="LCFS Standard (σ)", ylabel="λ LCFS",
-        title="LCFS Dual Variable", titlefontsize=22, titlefontweight=:bold,
+        xlabel="CI standard (σ)",
+        ylabel="λ CI standard ($(Units.METRIC ? "\$/tonne CO2e" : "\$/ton CO2e"))",
+        title="CI standard Dual Variable", titlefontsize=22, titlefontweight=:bold,
         legend=false, grid=true,
         linewidth=3, color=:darkgreen, marker=:circle, markersize=6,
         left_margin=18Plots.mm, bottom_margin=15Plots.mm,
@@ -1162,7 +1232,7 @@ function plot_price_paired_2x2(results_extended_analysis; vlines=nothing)
     road_ymax = Dict(:carbontax => 25.0, :rfs => 25.0, :lcfs => 25.0, :taxcredit => 25.0)
 
     # x max
-    xmax_map = Dict(pt => ep_6B[pt].policy_value for pt in [:carbontax, :rfs, :lcfs, :taxcredit])
+    # xmax_map is the one built in the vlines block above.
     xmin_map = Dict(:carbontax => 0.0, :rfs => 0.0, :lcfs => 0.0, :taxcredit => 0.0)
 
     pct(f, sol, base) = (f(sol) - base) / base * 100
@@ -1263,15 +1333,18 @@ savefig(p_mile_price, joinpath(FIGURE_DIR, "price_miles.png"))
 function plot_food_products_stacked_by_policy(results_extended_analysis; vlines=nothing)
     solutions = results_extended_analysis.solutions
 
-    # y max
-    CORN_YMAX = 12.0
-    OIL_YMAX = 16.0
+    # y max, declared in the model's own units then converted with the series.
+    # Soybean meal is already MMT, so its limit is untouched.
+    CORN_YMAX = Units.bu_to_Mt(12.0)
+    OIL_YMAX = Units.lb_to_Mt(16.0)
     MEAL_YMAX = 100.0
+    CORN_TAG = Units.METRIC ? "Mt" : "B bu"
+    OIL_TAG = Units.METRIC ? "Mt" : "B lbs"
 
     # 3 panels
     function make_block(policy_type, xlabel, title)
         sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
-        x_max = ep_6B[policy_type].policy_value
+        x_max = xmax_map[policy_type]
 
         xs, corn_total, corn_food, soy_oil, soy_meal = Float64[], Float64[], Float64[], Float64[], Float64[]
         for s in sorted
@@ -1282,9 +1355,10 @@ function plot_food_products_stacked_by_policy(results_extended_analysis; vlines=
             ddgs = 0.092 * sol.q[:ethanol] +
                    0.159 * (sol.q[:saf_atj_conv] + sol.q[:saf_atj_cs])
             push!(xs, xval)
-            push!(corn_total, sol.x[:corn])
-            push!(corn_food, sol.x[:corn] - ddgs)
-            push!(soy_oil, sol.x[:soyoil])
+            # DDGS is in corn-bushel equivalents, so it takes the corn factor.
+            push!(corn_total, Units.bu_to_Mt(sol.x[:corn]))
+            push!(corn_food, Units.bu_to_Mt(sol.x[:corn] - ddgs))
+            push!(soy_oil, Units.lb_to_Mt(sol.x[:soyoil]))
             push!(soy_meal, sol.x[:soymeal])
         end
         idx = sortperm(xs)
@@ -1307,14 +1381,14 @@ function plot_food_products_stacked_by_policy(results_extended_analysis; vlines=
             fillcolor=:orange, linewidth=1.5, color=:orange)
         plot!(p_c, xs, corn_total, fillrange=corn_food, fillalpha=0.8,
             fillcolor=:red, linewidth=1.5, color=:red)
-        annotate!(p_c, x_max * 0.03, CORN_YMAX * 0.95, text("B bu", :black, :left, 15))
+        annotate!(p_c, x_max * 0.03, CORN_YMAX * 0.95, text(CORN_TAG, :black, :left, 15))
         add_vlines!(p_c, policy_type, vlines; annotate_y=CORN_YMAX * 0.96, fontsize=13)
 
         # Soybean oil
         p_o = plot(; ylims=(0, OIL_YMAX), kw_mid...)
         plot!(p_o, xs, soy_oil, fillrange=0, fillalpha=0.8,
             fillcolor=:darkgreen, linewidth=1.5, color=:darkgreen)
-        annotate!(p_o, x_max * 0.03, OIL_YMAX * 0.95, text("B lbs", :black, :left, 15))
+        annotate!(p_o, x_max * 0.03, OIL_YMAX * 0.95, text(OIL_TAG, :black, :left, 15))
         add_vlines!(p_o, policy_type, vlines; annotate_y=OIL_YMAX * 0.96, fontsize=13)
 
         # Soybean meal
@@ -1382,7 +1456,7 @@ function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothi
         vals = Float64[]
         for (policy_type, _, _, _) in POLICIES
             sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
-            x_max = ep_6B[policy_type].policy_value
+            x_max = xmax_map[policy_type]
             for s in sorted
                 sol = solutions[s]
                 isnothing(sol) && continue
@@ -1402,7 +1476,7 @@ function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothi
         vals = Float64[]
         for (policy_type, _, _, _) in POLICIES
             sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
-            x_max = ep_6B[policy_type].policy_value
+            x_max = xmax_map[policy_type]
             for s in sorted
                 sol = solutions[s]
                 isnothing(sol) && continue
@@ -1424,7 +1498,7 @@ function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothi
         panels = []
         for (col, (policy_type, _, xlabel, title)) in enumerate(POLICIES)
             sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
-            x_max = ep_6B[policy_type].policy_value
+            x_max = xmax_map[policy_type]
 
             p = plot(
                 title=show_title ? title : "",
@@ -1466,7 +1540,7 @@ function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothi
         panels = []
         for (col, (policy_type, _, xlabel, _)) in enumerate(POLICIES)
             sorted = sort_scenarios(results_extended_analysis.scenario_groups[policy_type])
-            x_max = ep_6B[policy_type].policy_value
+            x_max = xmax_map[policy_type]
 
             p = plot(
                 title="",
@@ -1605,22 +1679,27 @@ function plot_welfare_summary_by_policy(results_extended_analysis; vlines=nothin
                 fillalpha=0.75, linewidth=0, color=sector_colors[sec], label="")
         end
 
-        ps_vals = [w.ps_land_change for w in ws]
-        ps_base = similar(ps_vals)
-        ps_top = similar(ps_vals)
-        for j in 1:n
-            if ps_vals[j] >= 0
-                ps_base[j] = pos_cum[j]
-                ps_top[j] = pos_cum[j] + ps_vals[j]
-                pos_cum[j] += ps_vals[j]
-            else
-                ps_base[j] = neg_cum[j]
-                ps_top[j] = neg_cum[j] + ps_vals[j]
-                neg_cum[j] += ps_vals[j]
+        # Producer surplus is stacked as two separate bands so the areas still sum
+        # to private_surplus: land rent, then non-soy feedstock scarcity rent.
+        for (ps_key, ps_color, ps_alpha) in [(:ps_land_change, RGB(0.5, 0.5, 0.5), 0.45),
+            (:ps_nonsoy_change, RGB(0.28, 0.28, 0.28), 0.60)]
+            ps_vals = [getfield(w, ps_key) for w in ws]
+            ps_base = similar(ps_vals)
+            ps_top = similar(ps_vals)
+            for j in 1:n
+                if ps_vals[j] >= 0
+                    ps_base[j] = pos_cum[j]
+                    ps_top[j] = pos_cum[j] + ps_vals[j]
+                    pos_cum[j] += ps_vals[j]
+                else
+                    ps_base[j] = neg_cum[j]
+                    ps_top[j] = neg_cum[j] + ps_vals[j]
+                    neg_cum[j] += ps_vals[j]
+                end
             end
+            plot!(pl, xs, ps_top, fillrange=ps_base,
+                fillalpha=ps_alpha, linewidth=0, color=ps_color, label="")
         end
-        plot!(pl, xs, ps_top, fillrange=ps_base,
-            fillalpha=0.45, linewidth=0, color=:gray50, label="")
 
         if policy_type in [:carbontax, :taxcredit]
             gr_vals = [w.gr_change for w in ws]
@@ -1660,7 +1739,9 @@ function plot_welfare_summary_by_policy(results_extended_analysis; vlines=nothin
         ticks=false, xlims=(0, 1), ylims=(0, 1), framestyle=:none,
         legendfontsize=14, background_color=:white)
     plot!(p_leg, [NaN], [NaN], seriestype=:shape, fillalpha=0.45,
-        linewidth=0, color=:gray50, label="Producer surplus")
+        linewidth=0, color=RGB(0.5, 0.5, 0.5), label="PS: Land")
+    plot!(p_leg, [NaN], [NaN], seriestype=:shape, fillalpha=0.60,
+        linewidth=0, color=RGB(0.28, 0.28, 0.28), label="PS: Non-soy feedstock")
     for sec in sectors
         plot!(p_leg, [NaN], [NaN], seriestype=:shape, fillalpha=0.75,
             linewidth=0, color=sector_colors[sec], label="Cons: $(sector_names[sec])")
@@ -1723,12 +1804,12 @@ function plot_emissions_stacked_broken_axis(results_extended_analysis;
         x_upper = vlines[policy_type][2][1]
         xl = (minimum(xs), x_upper)
 
-        # 정책별 세로 그리드 간격
+        # Vertical grid spacing per policy
         step = tick_step[policy_type]
         xt = collect((ceil(xl[1]/step)*step):step:xl[2])
 
         p_top = plot(title=title, titlefontsize=22, titlefontweight=:bold,
-            ylabel=show_ylabel ? "Billion ton CO₂e" : "", legend=false,
+            ylabel=show_ylabel ? "Billion tonne CO₂e" : "", legend=false,
             grid=true, gridalpha=0.3, gridcolor=:gray, gridlinewidth=0.5,
             xlims=xl, ylims=(break_point, y_max),
             xticks=(xt, fill("", length(xt))),

@@ -1,7 +1,7 @@
-# analysis.jl
+# analysis_cet_land.jl
 
-module SAFAnalysis
-import Main.SAFModel: build_unified_model, extract_solution, tax_credit_rate, FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
+module AnalysisCETLand
+import Main.ModelCETLand: build_unified_model, extract_solution, tax_credit_rate, FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
 using JLD2
 using DataFrames
 using Printf
@@ -382,6 +382,113 @@ function display_ps_land_changes(ps_land_changes; scenarios=nothing,
     println("\n" * "="^130)
 end
 
+"""
+    nonsoy_feedstock_use(sol, params)
+
+Total non-soy feedstock consumed (billion lb): Σ α_g q_g over the three non-soy goods.
+This is the left-hand quantity in the non-soy capacity constraint.
+"""
+function nonsoy_feedstock_use(sol, params)
+    α = params.coeff.alpha
+    return α[:saf_hefa_nonsoy] * sol.q[:saf_hefa_nonsoy] +
+           α[:biodiesel_nonsoy] * sol.q[:biodiesel_nonsoy] +
+           α[:rd_nonsoy] * sol.q[:rd_nonsoy]
+end
+
+"""
+    calculate_ps_nonsoy_changes(solutions, solution_sq, params; scenarios=nothing)
+
+Non-soy feedstock producer surplus (scarcity rent) changes. HARD-CAPACITY version,
+identical to the main model: this robustness check varies land supply (CET), not
+the non-soy feedstock market.
+
+Supply is perfectly elastic at `nonsoy_feedstock_price` c up to `nonsoy_capacity` K,
+then vertical. Refiners face c + λ, where λ = λ_nonsoy_capacity is the multiplier on
+`K - Σ α_g q_g ≥ 0`. Hence:
+
+  - λ = 0 (capacity slack): market price = c = MC, no inframarginal unit is cheaper
+    than the marginal one, so the rent is exactly zero.
+  - λ > 0 (capacity binds): price must rise to c + λ to ration demand down to K.
+    All K units still cost c to supply, so the rent is the rectangle λ * K.
+
+Rent is evaluated as λ * (feedstock actually used); complementarity makes this equal
+to λ * K whenever λ > 0, but using realised use is robust to solver slack.
+
+ΔPS = rent_policy - rent_sq.
+
+NOTE ON INTERPRETATION: this rent accrues to whoever owns the scarce non-soy feedstock
+(renderers, UCO collectors, importers). If that supply is largely imported, a
+US-only welfare measure should exclude it, but then say so explicitly rather than
+leaving the term silently at zero.
+"""
+function calculate_ps_nonsoy_changes(solutions, solution_sq, params; scenarios=nothing)
+    scenario_list = isnothing(scenarios) ? collect(keys(solutions)) : scenarios
+    scenario_list = filter(s -> s != :statusquo, scenario_list)
+
+    K = params.coeff.nonsoy_capacity
+    c = params.coeff.nonsoy_feedstock_price
+
+    λ_sq = solution_sq.duals.λ_nonsoy_capacity
+    use_sq = nonsoy_feedstock_use(solution_sq, params)
+    rent_sq = λ_sq * use_sq
+
+    ps_nonsoy_changes = Dict()
+    for s in scenario_list
+        sol = solutions[s]
+        λ_pol = sol.duals.λ_nonsoy_capacity
+        use_pol = nonsoy_feedstock_use(sol, params)
+        rent_pol = λ_pol * use_pol
+
+        ps_nonsoy_changes[s] = (
+            ps_change=clean_small(rent_pol - rent_sq),
+            λ_sq=clean_small(λ_sq),
+            λ_policy=clean_small(λ_pol),
+            use_sq=clean_small(use_sq),
+            use_policy=clean_small(use_pol),
+            rent_sq=clean_small(rent_sq),
+            rent_policy=clean_small(rent_pol),
+            price_sq=clean_small(c + λ_sq),
+            price_policy=clean_small(c + λ_pol),
+            binding=(λ_pol > 1e-10),
+            capacity=K
+        )
+    end
+    return ps_nonsoy_changes
+end
+
+function display_ps_nonsoy_changes(ps_nonsoy_changes; scenarios=nothing,
+    title="NON-SOY FEEDSTOCK PRODUCER SURPLUS CHANGES (billion \$)")
+    scenario_list = isnothing(scenarios) ? collect(keys(ps_nonsoy_changes)) : scenarios
+    println("\n" * "="^130)
+    println(title)
+    println("="^130)
+    if isempty(scenario_list)
+        println("(no policy scenarios)")
+        println("="^130)
+        return nothing
+    end
+    df = DataFrame(Metric=String[])
+    for s in scenario_list
+        df[!, s] = Float64[]
+    end
+    for (mname, mkey) in [("λ non-soy capacity (\$/lb)", :λ_policy),
+        ("Effective price c+λ (\$/lb)", :price_policy),
+        ("Feedstock used (billion lb)", :use_policy),
+        ("Rent level (billion \$)", :rent_policy),
+        ("PS Change (Non-soy)", :ps_change)]
+        push!(df.Metric, mname)
+        for s in scenario_list
+            push!(df[!, s], Float64(getfield(ps_nonsoy_changes[s], mkey)))
+        end
+    end
+    show(df, allrows=true)
+    any_binding = any(ps_nonsoy_changes[s].binding for s in scenario_list)
+    println("\n(capacity K = $(ps_nonsoy_changes[first(scenario_list)].capacity) billion lb; " *
+            (any_binding ? "binds in at least one scenario → rent is non-zero)" :
+             "slack in all scenarios → rent is zero by construction)"))
+    println("="^130)
+end
+
 function calculate_gov_revenue_change(solution_policy, implicit_taxes_policy, scenario)
     AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
@@ -479,24 +586,41 @@ function display_environmental_benefits(env_benefits, scc; scenarios=nothing,
 end
 
 
+"""
+    calculate_total_welfare(cs_changes, ps_land_changes, gr_changes, env_benefits;
+                            ps_nonsoy_changes=nothing, scenarios=nothing)
+
+Producer surplus is reported in three pieces:
+  ps_land_change   land rent (CET land allocation)
+  ps_nonsoy_change non-soy feedstock scarcity rent (λ_nonsoy_capacity * use)
+  ps_total_change  the sum, which is what enters private surplus
+
+`ps_nonsoy_changes` is a keyword so pre-existing 4-argument calls still run, but they
+will silently treat the non-soy rent as zero. Pass it whenever the non-soy capacity
+constraint can bind.
+"""
 function calculate_total_welfare(cs_changes, ps_land_changes, gr_changes, env_benefits;
-    scenarios=nothing)
+    ps_nonsoy_changes=nothing, scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(cs_changes)) : scenarios
     scenario_list = filter(s -> s != :statusquo, scenario_list)
     welfare_summary = Dict()
     for s in scenario_list
         cs = cs_changes[s][:total]
-        ps = ps_land_changes[s].ps_change
+        ps_land = ps_land_changes[s].ps_change
+        ps_nonsoy = isnothing(ps_nonsoy_changes) ? 0.0 : ps_nonsoy_changes[s].ps_change
+        ps_total = ps_land + ps_nonsoy
         gr = gr_changes[s].total
         env = env_benefits[s].total_benefit
         welfare_summary[s] = (
             cs_change=clean_small(cs),
             cs_by_sector=cs_changes[s],
-            ps_land_change=clean_small(ps),
+            ps_land_change=clean_small(ps_land),
+            ps_nonsoy_change=clean_small(ps_nonsoy),
+            ps_total_change=clean_small(ps_total),
             gr_change=clean_small(gr),
             env_benefit=clean_small(env),
-            private_surplus=clean_small(cs + ps + gr),
-            social_welfare=clean_small(cs + ps + gr + env)
+            private_surplus=clean_small(cs + ps_total + gr),
+            social_welfare=clean_small(cs + ps_total + gr + env)
         )
     end
     return welfare_summary
@@ -512,7 +636,9 @@ function display_welfare_summary(welfare_summary; scenarios=nothing, title="WELF
         df[!, s] = Float64[]
     end
     for (mname, mkey) in [("CS Change (a)", :cs_change),
-        ("PS Change (b)", :ps_land_change),
+        ("PS Land (b1)", :ps_land_change),
+        ("PS Non-soy (b2)", :ps_nonsoy_change),
+        ("PS Total (b=b1+b2)", :ps_total_change),
         ("Gov Revenue (c)", :gr_change),
         ("Env Benefit (d)", :env_benefit),
         ("Private Surplus (∆=a+b+c)", :private_surplus),
@@ -669,7 +795,7 @@ function display_comparison_tables(solutions, params, policy_configs;
     println("\n" * "="^130)
 
     # ── Welfare ───────────────────────────────────────────────────────────────
-    # status quo는 항상 SQ_CONFIG로 새로 실행
+    # The status quo is always re-solved with SQ_CONFIG
     println("\nComputing status quo for welfare comparison...")
     sq_model = build_unified_model(params, SQ_CONFIG)
     optimize!(sq_model)
@@ -694,15 +820,19 @@ function display_comparison_tables(solutions, params, policy_configs;
 
     cs_changes = calculate_cs_changes(enriched, enriched_sq, params; scenarios=pol_scenarios)
     ps_land = calculate_ps_land_changes(enriched, enriched_sq, params; scenarios=pol_scenarios)
+    ps_nonsoy = calculate_ps_nonsoy_changes(enriched, enriched_sq, params; scenarios=pol_scenarios)
     gr_changes = calculate_gr_changes(enriched; scenarios=pol_scenarios)
     env_benefits = calculate_environmental_benefit(enriched, enriched_sq, SCC; scenarios=pol_scenarios)
-    welfare_summary = calculate_total_welfare(cs_changes, ps_land, gr_changes, env_benefits; scenarios=pol_scenarios)
+    welfare_summary = calculate_total_welfare(cs_changes, ps_land, gr_changes, env_benefits;
+        ps_nonsoy_changes=ps_nonsoy, scenarios=pol_scenarios)
     aac_results = calculate_average_abatement_cost(welfare_summary, enriched, enriched_sq; scenarios=pol_scenarios)
 
     display_cs_changes(cs_changes;
         scenarios=pol_scenarios, title="$title: CS CHANGES (billion \$)")
     display_ps_land_changes(ps_land;
         scenarios=pol_scenarios, title="$title: LAND PS CHANGES (billion \$)")
+    display_ps_nonsoy_changes(ps_nonsoy;
+        scenarios=pol_scenarios, title="$title: NON-SOY FEEDSTOCK PS CHANGES (billion \$)")
     display_gr_changes(gr_changes;
         scenarios=pol_scenarios, title="$title: GOVERNMENT REVENUE (billion \$)")
     display_environmental_benefits(env_benefits, SCC;
@@ -715,6 +845,7 @@ function display_comparison_tables(solutions, params, policy_configs;
     return (
         cs_changes=cs_changes,
         ps_land=ps_land,
+        ps_nonsoy=ps_nonsoy,
         gr_changes=gr_changes,
         env_benefits=env_benefits,
         welfare_summary=welfare_summary,
@@ -733,10 +864,11 @@ export display_comparison_tables,
     clean_small,
     calc_cs_change, calculate_cs_changes, make_cs_change_table, display_cs_changes,
     calculate_ps_land_changes, display_ps_land_changes,
+    calculate_ps_nonsoy_changes, display_ps_nonsoy_changes, nonsoy_feedstock_use,
     calculate_gov_revenue_change, calculate_gr_changes, display_gr_changes,
     calculate_environmental_benefit, display_environmental_benefits,
     calculate_total_welfare, display_welfare_summary,
     calculate_average_abatement_cost, display_aac_analysis,
     SCC, POL, SQ_CONFIG
 
-end # module SAFAnalysis
+end # module AnalysisCETLand

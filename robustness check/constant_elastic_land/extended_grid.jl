@@ -2,17 +2,21 @@
 cd(@__DIR__)
 println("Working directory: ", pwd())
 
-include(joinpath(@__DIR__, "SAFModel.jl"))
-include(joinpath(@__DIR__, "analysis.jl"))
-import .SAFModel: params, build_unified_model, extract_solution,
+include(joinpath(@__DIR__, "model_cet_land.jl"))
+include(joinpath(@__DIR__, "analysis_cet_land.jl"))
+import .ModelCETLand: params, build_unified_model, extract_solution,
     FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
-import .SAFAnalysis: calculate_emissions_detail, calculate_implicit_taxes,
-    calculate_cs_changes, calculate_ps_land_changes,
+import .AnalysisCETLand: calculate_emissions_detail, calculate_implicit_taxes,
+    calculate_cs_changes, calculate_ps_land_changes, calculate_ps_nonsoy_changes,
     calculate_gr_changes, calculate_environmental_benefit,
     calculate_total_welfare
 using JLD2, DataFrames, Printf, Plots, JuMP, Statistics
 
-const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results_cet_land"
+include(joinpath(@__DIR__, "..", "..", "main", "paths.jl"))
+using .Paths
+const OUT = Paths.variant("cet_land")
+const OUTPUT_DIR = OUT.data
+const FIGURE_DIR = OUT.figures
 
 # =================================================================================
 # 0. Shared Constants & Helpers
@@ -136,14 +140,16 @@ begin
         println("Calculating welfare components...")
         cs = calculate_cs_changes(valid, sq, params)
         ps = calculate_ps_land_changes(valid, sq, params)
+        ps_ns = calculate_ps_nonsoy_changes(valid, sq, params)
         gr = calculate_gr_changes(valid)
         env = calculate_environmental_benefit(valid, sq, scc)
-        welf = calculate_total_welfare(cs, ps, gr, env)
+        welf = calculate_total_welfare(cs, ps, gr, env; ps_nonsoy_changes=ps_ns)
 
         return (
             solutions=valid,
             cs_changes=cs,
             ps_land_changes=ps,
+            ps_nonsoy_changes=ps_ns,
             gr_changes=gr,
             env_benefits=env,
             welfare_summary=welf,
@@ -336,7 +342,8 @@ function results_to_dataframe(extended_analysis, policy_configs, mac_extended)
     end
     for col in [:p_avi, :p_gas, :p_die, :r_land,
         :emission_avi, :emission_road, :emission_food, :emission_total,
-        :cs_change, :ps_land_change, :gr_change, :env_benefit, :private_surplus, :social_welfare,
+        :cs_change, :ps_land_change, :ps_nonsoy_change, :ps_total_change,
+        :gr_change, :env_benefit, :private_surplus, :social_welfare,
         :mac_private, :mac_social]
         df[!, col] = Float64[]
     end
@@ -357,10 +364,11 @@ function results_to_dataframe(extended_analysis, policy_configs, mac_extended)
         append!(row, [sol.emissions.aviation * 1000, sol.emissions.road * 1000,
             sol.emissions.food * 1000, sol.emissions.total * 1000])
         if name == :statusquo
-            append!(row, zeros(6))
+            append!(row, zeros(8))
         else
             w = welfare_summary[name]
-            append!(row, [w.cs_change, w.ps_land_change, w.gr_change,
+            append!(row, [w.cs_change, w.ps_land_change, w.ps_nonsoy_change,
+                w.ps_total_change, w.gr_change,
                 w.env_benefit, w.private_surplus, w.social_welfare])
         end
 
@@ -568,14 +576,18 @@ function plot_welfare_summary_line_by_policy(results_extended_analysis; vlines=n
         plot!(p[idx], xs, [w.cs_change for w in ws], label="CS", linewidth=2, color=:steelblue,
             xlabel=xlabel, ylabel="Welfare Change (B\$)", title=title,
             titlefontsize=16, titlefontweight=:bold, legend=:best, legendfontsize=10)
-        plot!(p[idx], xs, [w.ps_land_change for w in ws], label="PS", linewidth=2, color=:orange)
+        plot!(p[idx], xs, [w.ps_land_change for w in ws], label="PS (Land)", linewidth=2, color=:orange)
+        plot!(p[idx], xs, [w.ps_nonsoy_change for w in ws], label="PS (Non-soy)", linewidth=2,
+            linestyle=:dash, color=:brown)
+        plot!(p[idx], xs, [w.ps_total_change for w in ws], label="PS (Total)", linewidth=2, color=:darkorange)
         policy_type in [:carbontax, :taxcredit] &&
             plot!(p[idx], xs, [w.gr_change for w in ws], label="Govt Revenue", linewidth=2, color=:green)
         plot!(p[idx], xs, [w.private_surplus for w in ws], label="Private", linewidth=3, linestyle=:dot, color=:purple)
         plot!(p[idx], xs, [w.social_welfare for w in ws], label="Social", linewidth=3, linestyle=:dot, color=:red)
         hline!(p[idx], [0], color=:gray, linestyle=:dot, label="", alpha=0.5)
 
-        y_top = maximum(vcat([w.cs_change, w.ps_land_change, w.private_surplus, w.social_welfare] for w in ws)...)
+        y_top = maximum(vcat([w.cs_change, w.ps_land_change, w.ps_nonsoy_change,
+            w.ps_total_change, w.private_surplus, w.social_welfare] for w in ws)...)
         add_vlines!(p[idx], policy_type, vlines; annotate_y=y_top * 0.95)
     end
     return p
@@ -692,7 +704,7 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
             plot!(p, xs, its, linewidth=3.0, color=color, linestyle=lstyle)
         end
 
-        # RFS: 나머지 SAF 대표값
+        # RFS: representative value for the remaining SAF
         if policy_type == :rfs
             g_rep = RFS_GROUP[1]
             xs, its = Float64[], Float64[]
@@ -711,7 +723,7 @@ function plot_implicit_tax_by_policy(results_extended_analysis; vlines=nothing)
             end
         end
 
-        # 끝점 라벨 (overlap 보정)
+        # End-point labels (overlap adjusted)
         endpoint_vals = Dict(g => itvals[sortperm(xs)[end]]
                              for (g, (xs, itvals)) in series_data if !isempty(xs))
         if !isempty(endpoint_vals)
@@ -832,9 +844,9 @@ p_avi = plot_fuel_production_stacked(results_df, aviation_config; vlines=vlines_
 p_gas = plot_fuel_production_stacked(results_df, gasoline_config; vlines=vlines_data)
 p_diesel = plot_fuel_production_stacked(results_df, diesel_config; vlines=vlines_data)
 
-savefig(p_avi, joinpath(OUTPUT_DIR, "quantity_aviation.png"))
-savefig(p_gas, joinpath(OUTPUT_DIR, "quantity_gasoline.png"))
-savefig(p_diesel, joinpath(OUTPUT_DIR, "quantity_diesel.png"))
+savefig(p_avi, joinpath(FIGURE_DIR, "quantity_aviation.png"))
+savefig(p_gas, joinpath(FIGURE_DIR, "quantity_gasoline.png"))
+savefig(p_diesel, joinpath(FIGURE_DIR, "quantity_diesel.png"))
 
 
 # ── Food ─────────────────────────────────────────────────────────────────────
@@ -1038,7 +1050,7 @@ function plot_price_paired_2x2(results_extended_analysis; vlines=nothing)
 end
 
 p_mile_price = (plot_price_paired_2x2(results_extended_analysis; vlines=vlines_data))
-savefig(p_mile_price, joinpath(OUTPUT_DIR, "price_miles.png"))
+savefig(p_mile_price, joinpath(FIGURE_DIR, "price_miles.png"))
 
 # food quantity
 function plot_food_products_stacked_by_policy(results_extended_analysis; vlines=nothing)
@@ -1138,7 +1150,7 @@ function plot_food_products_stacked_by_policy(results_extended_analysis; vlines=
 end
 
 q_food = plot_food_products_stacked_by_policy(results_extended_analysis; vlines=vlines_data)
-savefig(q_food, joinpath(OUTPUT_DIR, "quantity_food.png"))
+savefig(q_food, joinpath(FIGURE_DIR, "quantity_food.png"))
 
 # feedstock prices (% change + land rent, 3-row version)
 function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothing)
@@ -1305,7 +1317,7 @@ function plot_feedstock_prices_by_policy(results_extended_analysis; vlines=nothi
 end
 
 p_feedstock = plot_feedstock_prices_by_policy(results_extended_analysis; vlines=vlines_data)
-savefig(p_feedstock, joinpath(OUTPUT_DIR, "price_feedstock.png"))
+savefig(p_feedstock, joinpath(FIGURE_DIR, "price_feedstock.png"))
 
 # welfare (sector-stacked version)
 function plot_welfare_summary_by_policy(results_extended_analysis; vlines=nothing)
@@ -1386,22 +1398,27 @@ function plot_welfare_summary_by_policy(results_extended_analysis; vlines=nothin
                 fillalpha=0.75, linewidth=0, color=sector_colors[sec], label="")
         end
 
-        ps_vals = [w.ps_land_change for w in ws]
-        ps_base = similar(ps_vals)
-        ps_top = similar(ps_vals)
-        for j in 1:n
-            if ps_vals[j] >= 0
-                ps_base[j] = pos_cum[j]
-                ps_top[j] = pos_cum[j] + ps_vals[j]
-                pos_cum[j] += ps_vals[j]
-            else
-                ps_base[j] = neg_cum[j]
-                ps_top[j] = neg_cum[j] + ps_vals[j]
-                neg_cum[j] += ps_vals[j]
+        # Producer surplus stacked as two bands (land rent, non-soy feedstock rent)
+        # so the shaded areas still sum to private_surplus.
+        for (ps_key, ps_color, ps_alpha) in [(:ps_land_change, RGB(0.5, 0.5, 0.5), 0.45),
+            (:ps_nonsoy_change, RGB(0.28, 0.28, 0.28), 0.60)]
+            ps_vals = [getfield(w, ps_key) for w in ws]
+            ps_base = similar(ps_vals)
+            ps_top = similar(ps_vals)
+            for j in 1:n
+                if ps_vals[j] >= 0
+                    ps_base[j] = pos_cum[j]
+                    ps_top[j] = pos_cum[j] + ps_vals[j]
+                    pos_cum[j] += ps_vals[j]
+                else
+                    ps_base[j] = neg_cum[j]
+                    ps_top[j] = neg_cum[j] + ps_vals[j]
+                    neg_cum[j] += ps_vals[j]
+                end
             end
+            plot!(pl, xs, ps_top, fillrange=ps_base,
+                fillalpha=ps_alpha, linewidth=0, color=ps_color, label="")
         end
-        plot!(pl, xs, ps_top, fillrange=ps_base,
-            fillalpha=0.45, linewidth=0, color=:gray50, label="")
 
         if policy_type in [:carbontax, :taxcredit]
             gr_vals = [w.gr_change for w in ws]
@@ -1441,7 +1458,9 @@ function plot_welfare_summary_by_policy(results_extended_analysis; vlines=nothin
         ticks=false, xlims=(0, 1), ylims=(0, 1), framestyle=:none,
         legendfontsize=14, background_color=:white)
     plot!(p_leg, [NaN], [NaN], seriestype=:shape, fillalpha=0.45,
-        linewidth=0, color=:gray50, label="Producer surplus")
+        linewidth=0, color=RGB(0.5, 0.5, 0.5), label="PS: Land")
+    plot!(p_leg, [NaN], [NaN], seriestype=:shape, fillalpha=0.60,
+        linewidth=0, color=RGB(0.28, 0.28, 0.28), label="PS: Non-soy feedstock")
     for sec in sectors
         plot!(p_leg, [NaN], [NaN], seriestype=:shape, fillalpha=0.75,
             linewidth=0, color=sector_colors[sec], label="Cons: $(sector_names[sec])")
@@ -1459,7 +1478,7 @@ function plot_welfare_summary_by_policy(results_extended_analysis; vlines=nothin
 end
 
 welfare = plot_welfare_summary_by_policy(results_extended_analysis; vlines=vlines_data)
-savefig(welfare, joinpath(OUTPUT_DIR, "welfare.png"))
+savefig(welfare, joinpath(FIGURE_DIR, "welfare.png"))
 
 # emissions (tick_step version)
 function plot_emissions_stacked_broken_axis(results_extended_analysis;
@@ -1504,7 +1523,7 @@ function plot_emissions_stacked_broken_axis(results_extended_analysis;
         x_upper = vlines[policy_type][2][1]
         xl = (minimum(xs), x_upper)
 
-        # 정책별 세로 그리드 간격
+        # Vertical grid spacing per policy
         step = tick_step[policy_type]
         xt = collect((ceil(xl[1]/step)*step):step:xl[2])
 
@@ -1542,4 +1561,4 @@ function plot_emissions_stacked_broken_axis(results_extended_analysis;
 end
 
 emissions = plot_emissions_stacked_broken_axis(results_extended_analysis; vlines=vlines_data, break_point=1.2, y_max=2.6)
-savefig(emissions, joinpath(OUTPUT_DIR, "emissions.png"))
+savefig(emissions, joinpath(FIGURE_DIR, "emissions.png"))

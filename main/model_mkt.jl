@@ -1,11 +1,9 @@
-module SAFModel
+module ModelMkt
 
 using JuMP, PATHSolver
-using Pkg
 using Printf
 using Plots
 using DataFrames
-Pkg.add("DataFrames")
 
 # =================================================================================
 # 1. Input
@@ -62,12 +60,15 @@ const SECTORS = [
 const FEEDSTOCK_GOODS = GOODS[1:4] # all feedstock goods
 const FUEL_GOODS = GOODS[5:17]  # all fuel goods
 const FOOD_GOODS = GOODS[18:19]  # all food goods
+const SAF_GOODS = GOODS[6:10]   # the five SAF pathways
+const AVIATION_FUELS = GOODS[5:10]  # jet fuel + the five SAF pathways
 
 # =====================
 # parameters
 # =====================
 
-# δ: Carbon Intensity (ton CO2e per gallon) all fuel and food goods
+# δ: Carbon Intensity. Fuel goods are ton CO2e per gallon.
+# Food goods differ: corn is ton CO2e per bushel, soyoil is ton CO2e per lb (see emissions calc in analysis.jl)
 δ_vec = [
     0.01155398, 0.007320614, 0.004674426, 0.004609978, 0.003717805, 0.002029502,
     0.012039062, 0.003705445, 0.014101869, 0.003879759, 0.0022,
@@ -119,7 +120,7 @@ soybean_to_oil = 10.71 # lb oil per bushel of soybeans
 soybean_to_meal = 0.02155 # metric ton / bushel of soybeans
 
 # meal per oil ratio: (million metric ton of meal per billion lb of oil)
-meal_per_oil = 2.22
+meal_per_oil = soybean_to_meal / soybean_to_oil * 1000
 
 # delta_mj for IRA credit calculation excluding ILUC
 δ_mj_vec = [
@@ -147,7 +148,7 @@ const baselineCI = 50.0
 # sigma: price elasticity of demand
 # k = 1 / sigma
 # A = p0 * x0^(-1/sigma)
-# s: quantity at p_high for integral calculation
+# s: choke quantity 
 
 function create_demand_params(sigma, p0, x0, p_high)
     A_val = p0 * x0^(-1 / sigma)
@@ -157,12 +158,12 @@ function create_demand_params(sigma, p0, x0, p_high)
 end
 
 demand = Dict(
-    :avi => create_demand_params(-0.4, 0.04, 1204.79, 10.0),
-    :gas => create_demand_params(-0.2, 0.127, 2856.73, 10.0),
-    :die => create_demand_params(-0.1, 0.3356, 357.28, 10.0),
-    :corn => create_demand_params(-0.23, 4.55, 7.1951 + 1.313879, 20.0), # food+DDGS
-    :soyoil => create_demand_params(-0.18, 0.465, 14.164, 5.0),
-    :soymeal => create_demand_params(-0.941, 423.41, 62.27, 600.0)
+    :avi => create_demand_params(-0.4, 0.04, 1204.79, 500.0),
+    :gas => create_demand_params(-0.2, 0.127, 2856.73, 500.0),
+    :die => create_demand_params(-0.1, 0.3356, 357.28, 500.0),
+    :corn => create_demand_params(-0.23, 4.55, 7.1951 + 1.313879, 500.0), # food+DDGS
+    :soyoil => create_demand_params(-0.18, 0.465, 14.164, 500.0),
+    :soymeal => create_demand_params(-0.941, 423.41, 62.27, 50000.0)
 )
 
 # Fuel supply functions: fuel hockey stick = c0 + c1*q + c2*(x-v)^2
@@ -217,9 +218,30 @@ fuel_goods_cost_map = [
     :biodiesel_shared # Used for both biodiesel_soy and biodiesel_nonsoy
 ]
 
+# Fossil fuel supply: constant elasticity instead of perfectly elastic.
+const FOSSIL_GROUPS = (:jet_fuel, :gasoline, :diesel)
+const fossil_eta = 2.0
+const fossil_Q0 = Dict(
+    :jet_fuel => 20.3386,
+    :gasoline => 125.613,
+    :diesel => 43.9,
+)
+
 fuel_cost = Dict()
 for (key, c0, c1, c2, v) in zip(fuel_goods_cost_map, c0_vec, c1_vec, c2_vec, v_vec)
-    fuel_cost[key] = (c0=c0, c1=c1, c2=c2, v=v)
+    fuel_cost[key] = key in FOSSIL_GROUPS ?
+                     (c0=c0, c1=c1, c2=c2, v=v, eta=fossil_eta, Q0=fossil_Q0[key]) :
+                     (c0=c0, c1=c1, c2=c2, v=v, eta=Inf, Q0=0.0)
+end
+
+# if the fuel is fossil, then the supply is constant elasticity; otherwise, it is perfectly elastic.
+fossil_ces(fc) = isfinite(fc.eta)
+
+function supply_ps(fc, Q)
+    over = max(0.0, Q - fc.v)
+    kink = fc.c2 * (Q * over^2 - over^3 / 3)
+    fossil_ces(fc) || return fc.c1 / 2 * Q^2 + kink
+    return fc.c0 * fc.Q0 * (Q / fc.Q0)^(1 + 1 / fc.eta) / (1 + fc.eta) + kink
 end
 
 # land supply functions: land = L0*(r/r0)^ϵ
@@ -241,10 +263,50 @@ supply = (
 κ = 19.0  # $ per acre
 
 # exogenously fixed non-soy feedstock price ($/lb)
-const nonsoy_feedstock_price = 0.49
+# Non-soy supply is perfectly elastic at this price up to nonsoy_capacity, then vertical.
+const nonsoy_feedstock_price = 0.4
+
+# non-soy feedstock availability ceiling (billion lb)
+const nonsoy_capacity = 25.0
 
 # HEFA SAF additional processing cost compared to RD ($/gal)
 const hefa_saf_premium = 0.064
+
+# Feedstock slate adjustment f_k = (rho_k/2)(A_k - s_bar_k F_k)^2 / F_k, A_k = non-soy lb and
+# F_k = total lb on route k. Without it the soy and non-soy variants are perfect substitutes
+# and their split is indeterminate. rho = 0.1 regularizes; it does not calibrate the slate.
+ρ_pretreat = Dict(
+    :bd => 0.1,
+    :rd => 0.1,
+    :hefa => 0.1,
+)
+
+# Floor on the feedstock denominator (B lb). A route can be idle (HEFA-SAF is zero in the
+# status quo), and s = A/F is then 0/0. The floor keeps both the marginal terms and their
+# derivatives bounded; at 1e-3 B lb against ~19 B lb of throughput it is numerically invisible.
+const PRETREAT_FLOOR = 1e-3
+
+# Floor inside the fractional power of the fossil supply curve (B gal).  d/dQ of Q^(1/eta) is
+# unbounded at Q = 0; at 1e-6 against ~20 B gal of throughput the floor is numerically invisible.
+const SUPPLY_FLOOR = 1e-6
+
+# One route per fuel, not one per plant. Pooling HEFA-SAF with RD (they share a facility) pins
+# the pool's slate but leaves the allocation of non-soy BETWEEN them free, which is the same
+# indeterminacy one level up, and it bites under the volumetric RFS, where nothing else
+# distinguishes the two. Separate routes make every quantity determinate.
+const PRETREAT_ROUTES = Dict(
+    :bd => (ns=[:biodiesel_nonsoy],
+        soy=[:biodiesel_soy],
+        sbar=0.431),
+    :rd => (ns=[:rd_nonsoy],
+        soy=[:rd_soy],
+        sbar=0.731),
+    # No base-year slate data for HEFA-SAF. It runs through the same hydrotreater as RD, so it
+    # is given RD's slate and RD's ρ.
+    :hefa => (ns=[:saf_hefa_nonsoy],
+        soy=[:saf_hefa_conv, :saf_hefa_cs],
+        sbar=0.731),
+)
 
 # coefficient values for the model
 coeff = (
@@ -262,14 +324,31 @@ coeff = (
     delta_mj=δ_mj,
     baselineCI=baselineCI,
     nonsoy_feedstock_price=nonsoy_feedstock_price,
+    nonsoy_capacity=nonsoy_capacity,
+    rho_pretreat=ρ_pretreat,
     hefa_saf_premium=hefa_saf_premium
 )
 
-# helper function for tax credit calculation
-function tax_credit_rate(δ_mj_value, baselineCI, p)
-    ci_mmbtu = δ_mj_value * 1055.06 / 1000
-    emission_factor = max(0.0, (baselineCI - ci_mmbtu) / baselineCI)
-    return p * emission_factor
+# policy_ci(g, config, delta): the carbon intensity the REGULATOR uses as the tax and credit
+# BASE for fuel `g`. This is a policy quantity, not a physical one. Actual emissions always use
+# the true delta[g] (see calculate_emissions_detail); nothing here changes them.
+#
+#   recognize_cs = true   every fuel is priced at its own CI, so a CS pathway is credited for
+#                         being cleaner (saf_atj_cs = 0.004674).
+#   recognize_cs = false  the regulator cannot verify the climate-smart practice, so a CS
+#                         pathway is priced AS ITS CONVENTIONAL COUNTERPART.
+policy_ci(g, config, delta) =
+    (g == :saf_atj_cs && !config.recognize_cs) ? delta[:saf_atj_conv] :
+    (g == :saf_hefa_cs && !config.recognize_cs) ? delta[:saf_hefa_conv] :
+    delta[g]
+
+# saf_credit(g, config, coeff): per-gallon tax credit paid to aviation fuel `g`
+function saf_credit(g, config, coeff)
+    delta = coeff.delta
+    g in SAF_GOODS || return 0.0
+    ci = policy_ci(g, config, delta)
+    (config.use_ci_threshold && ci > 0.5 * delta[:jet_fuel]) && return 0.0
+    return config.p * max(0.0, delta[:jet_fuel] - ci)
 end
 
 # =====================
@@ -300,8 +379,8 @@ meta = Dict(
     :scenario_labels => Dict(
         :statusquo => "Status quo",
         :carbon_tax => "Carbon tax",
-        :rfs => "RFS",
-        :lcfs => "LCFS",
+        :rfs => "Volumetric mandate",
+        :lcfs => "CI standard",
         :tax_credit => "Tax credit",
     )
 )
@@ -353,7 +432,9 @@ function build_unified_model(params, config)
     delta_mj = coeff.delta_mj
     baselineCI = coeff.baselineCI
     nonsoy_feedstock_price = coeff.nonsoy_feedstock_price
+    nonsoy_capacity = coeff.nonsoy_capacity
     hefa_saf_premium = coeff.hefa_saf_premium
+    rho_pretreat = get(coeff, :rho_pretreat, Dict{Symbol,Float64}())
     L0 = land_supply.L0
     r0_land = land_supply.r0_land
     ϵ_land = land_supply.ϵ_land
@@ -519,11 +600,37 @@ function build_unified_model(params, config)
     )
 
     # Marginal costs for other fuels that do not have a shared production facility
+    # Jet fuel, gasoline and diesel take the constant-elasticity branch (see fuel_cost above);
+    # ethanol keeps the hockey stick.  SUPPLY_FLOOR keeps the fractional power away from zero,
+    # where its derivative is unbounded; the three fossil quantities never approach it.
     @expression(model, marginal_costs_fuel[g in (:jet_fuel, :gasoline, :diesel, :ethanol)],
-        fuel_cost[g].c0 +
-        fuel_cost[g].c1 * q[g] +
+        (fossil_ces(fuel_cost[g]) ?
+         fuel_cost[g].c0 * ((q[g] + SUPPLY_FLOOR) / fuel_cost[g].Q0)^(1 / fuel_cost[g].eta) :
+         fuel_cost[g].c0 + fuel_cost[g].c1 * q[g]) +
         fuel_cost[g].c2 * max(0, q[g] - fuel_cost[g].v)^2
     )
+
+    # Feedstock slate adjustment (see ρ_pretreat above for the derivation).  Marginal terms of
+    # f_k = (ρ_k/2)(s_k - s̄_k)^2 F_k; their difference across the two variants is ρ_k(s_k - s̄_k),
+    # which is what pins the split.  Skipped entirely when ρ = 0 so the original model is
+    # reproduced exactly rather than approximately.
+    pretreat_adj = Dict{Symbol,Any}(g => 0.0 for g in FUEL_GOODS)
+    for (k, route) in PRETREAT_ROUTES
+        ρ_k = get(rho_pretreat, k, 0.0)
+        ρ_k == 0.0 && continue
+        A_k = sum(alpha[g] * q[g] for g in route.ns)
+        F_k = A_k + sum(alpha[g] * q[g] for g in route.soy)
+        s̄ = route.sbar
+        d_k = @expression(model, (A_k - s̄ * F_k) / (F_k + PRETREAT_FLOOR))   # s_k - s̄_k
+        for g in route.ns
+            pretreat_adj[g] = @expression(model,
+                alpha[g] * ρ_k * (d_k * (1 - s̄) - d_k^2 / 2))
+        end
+        for g in route.soy
+            pretreat_adj[g] = @expression(model,
+                alpha[g] * ρ_k * (-d_k * s̄ - d_k^2 / 2))
+        end
+    end
 
     # Policy Coefficients (ALL policies included)
     @expression(model, policy_adjustment[g in FUEL_GOODS],
@@ -554,14 +661,12 @@ function build_unified_model(params, config)
             (g == :biodiesel_nonsoy) ? alpha[:biodiesel_nonsoy] :
             (g == :rd_nonsoy) ? alpha[:rd_nonsoy] : 0.0
         ) +
+        # 5. RD BD subsidy
+        #(-1) * (g in RD_GOODS ? 1.0 : 0.0) + (-1) * (g in BIODIESEL_GOODS ? 1.0 : 0.0) +
 
         # Policy-specific adjustments (aviation fuels only)
-        # 1. Carbon tax
-        config.t * (
-            g in AVIATION_FUELS ? (
-                (g ∈ [:saf_atj_cs, :saf_hefa_cs] && !config.recognize_cs) ? 0.0 : delta[g]
-            ) : 0.0
-        ) +
+        # 1. Carbon tax.
+        config.t * (g in AVIATION_FUELS ? policy_ci(g, config, delta) : 0.0) +
         #config.t * (
         #    config.carbon_tax_scope == :aviation ? (g in AVIATION_FUELS ? delta[g] : 0.0) :
         #    config.carbon_tax_scope == :all ? (g in ALL_GOODS ? delta[g] : 0.0) : 0.0
@@ -588,14 +693,7 @@ function build_unified_model(params, config)
         ) +
 
         #. 4. Tax credit for SAF
-        -(g in SAF_GOODS && haskey(delta_mj, g) ?
-          ((!config.use_ci_threshold || delta[g] <= 0.5 * delta[:jet_fuel]) &&
-           (config.recognize_cs || g ∉ [:saf_atj_cs, :saf_hefa_cs])) ?
-          tax_credit_rate(delta_mj[g], baselineCI, config.p) : 0.0
-          : 0.0)
-        # If the tax credit is applied to all biofuels
-        #-(g in union(SAF_GOODS, BIODIESEL_GOODS, RD_GOODS, [:ethanol]) && haskey(delta_mj, g) ?
-        #  tax_credit_rate(delta_mj[g], baselineCI, config.p) : 0.0)
+        -saf_credit(g, config, coeff)
     )
 
     # zero profit conditions: marginal cost + policy adjustments - price ⟂ q
@@ -625,7 +723,8 @@ function build_unified_model(params, config)
     @constraint(model,
         process_mc_hefa +
         alpha[:saf_hefa_conv] * p_f[:feedstock_soy_n] +
-        policy_adjustment[:saf_hefa_conv] -
+        policy_adjustment[:saf_hefa_conv] +
+        pretreat_adj[:saf_hefa_conv] -
         price_per_unit[:saf_hefa_conv]
         ⟂
         q[:saf_hefa_conv]
@@ -635,7 +734,8 @@ function build_unified_model(params, config)
     @constraint(model,
         process_mc_hefa +
         alpha[:saf_hefa_cs] * p_f[:feedstock_soy_cs] +
-        policy_adjustment[:saf_hefa_cs] -
+        policy_adjustment[:saf_hefa_cs] +
+        pretreat_adj[:saf_hefa_cs] -
         price_per_unit[:saf_hefa_cs]
         ⟂
         q[:saf_hefa_cs]
@@ -645,7 +745,8 @@ function build_unified_model(params, config)
     @constraint(model,
         process_mc_hefa +
         alpha[:saf_hefa_nonsoy] * nonsoy_feedstock_price +
-        policy_adjustment[:saf_hefa_nonsoy] -
+        policy_adjustment[:saf_hefa_nonsoy] +
+        pretreat_adj[:saf_hefa_nonsoy] -
         price_per_unit[:saf_hefa_nonsoy]
         ⟂
         q[:saf_hefa_nonsoy]
@@ -666,7 +767,8 @@ function build_unified_model(params, config)
     @constraint(model,
         process_mc_biodiesel +
         alpha[:biodiesel_soy] * p_f[:feedstock_soy_n] +
-        policy_adjustment[:biodiesel_soy] -
+        policy_adjustment[:biodiesel_soy] +
+        pretreat_adj[:biodiesel_soy] -
         price_per_unit[:biodiesel_soy]
         ⟂
         q[:biodiesel_soy]
@@ -676,7 +778,8 @@ function build_unified_model(params, config)
     @constraint(model,
         process_mc_biodiesel +
         alpha[:biodiesel_nonsoy] * nonsoy_feedstock_price +
-        policy_adjustment[:biodiesel_nonsoy] -
+        policy_adjustment[:biodiesel_nonsoy] +
+        pretreat_adj[:biodiesel_nonsoy] -
         price_per_unit[:biodiesel_nonsoy]
         ⟂
         q[:biodiesel_nonsoy]
@@ -685,7 +788,8 @@ function build_unified_model(params, config)
     @constraint(model,
         process_mc_hefa - hefa_saf_premium +
         alpha[:rd_soy] * p_f[:feedstock_soy_n] +
-        policy_adjustment[:rd_soy] -
+        policy_adjustment[:rd_soy] +
+        pretreat_adj[:rd_soy] -
         price_per_unit[:rd_soy]
         ⟂
         q[:rd_soy]
@@ -695,7 +799,8 @@ function build_unified_model(params, config)
     @constraint(model,
         process_mc_hefa - hefa_saf_premium +
         alpha[:rd_nonsoy] * nonsoy_feedstock_price +
-        policy_adjustment[:rd_nonsoy] -
+        policy_adjustment[:rd_nonsoy] +
+        pretreat_adj[:rd_nonsoy] -
         price_per_unit[:rd_nonsoy]
         ⟂
         q[:rd_nonsoy]
@@ -807,8 +912,8 @@ function build_unified_model(params, config)
 
     # Non-soy capacity (always active)
     @constraint(model,
-        30 - (alpha[:biodiesel_nonsoy] * q[:biodiesel_nonsoy] + alpha[:rd_nonsoy] * q[:rd_nonsoy] +
-              alpha[:saf_hefa_nonsoy] * q[:saf_hefa_nonsoy])
+        nonsoy_capacity - (alpha[:biodiesel_nonsoy] * q[:biodiesel_nonsoy] + alpha[:rd_nonsoy] * q[:rd_nonsoy] +
+                           alpha[:saf_hefa_nonsoy] * q[:saf_hefa_nonsoy])
         ⟂
         λ_nonsoy_capacity
     )
@@ -827,7 +932,12 @@ function build_unified_model(params, config)
 
     # LCFS (controlled by σ)
     @constraint(model,
-        (1 - config.σ) * delta[:jet_fuel] * sum(q[g] for g in AVIATION_FUELS) -
+        (1 - config.σ) * delta[:jet_fuel] * (
+            q[:jet_fuel] +
+            sum(q[g] for g in SAF_GOODS if
+                         (!config.use_ci_threshold || delta[g] <= 0.5 * delta[:jet_fuel]) &&
+                         (config.recognize_cs || g ∉ [:saf_atj_cs, :saf_hefa_cs]))
+        ) -
         (delta[:jet_fuel] * q[:jet_fuel] +
          sum(delta[g] * q[g] for g in SAF_GOODS if
                                  (!config.use_ci_threshold || delta[g] <= 0.5 * delta[:jet_fuel]) &&
@@ -948,7 +1058,8 @@ function extract_all_solutions(results)
     return solutions
 end
 
-export params, tax_credit_rate, build_unified_model, run_scenario, extract_solution, extract_all_solutions
-export FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
+export params, saf_credit, policy_ci, build_unified_model, run_scenario, extract_solution, extract_all_solutions
+export FOSSIL_GROUPS, fossil_ces, supply_ps
+export FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS, SAF_GOODS, AVIATION_FUELS
 
 end # module SAFPolicy

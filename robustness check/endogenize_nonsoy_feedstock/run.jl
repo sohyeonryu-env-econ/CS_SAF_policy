@@ -1,18 +1,20 @@
 # run_model.jl  (endo non-soy version)
-include(joinpath(@__DIR__, "SAFModel.jl")) # load SAFModel.jl from the same directory
-include(joinpath(@__DIR__, "analysis.jl"))   # load analysis.jl from the same directory
+include(joinpath(@__DIR__, "model_endo_nonsoy.jl")) # load model_endo_nonsoy.jl from the same directory
+include(joinpath(@__DIR__, "analysis_endo_nonsoy.jl"))   # load analysis_endo_nonsoy.jl from the same directory
 
 cd(@__DIR__)                               # Set working directory to the script's directory
 println("Working directory: ", pwd())
 
-using .SAFModel
-using .SAFAnalysis
-import .SAFModel: params, run_scenario, extract_solution, is_solved_and_feasible;
-import Pkg;
+using .ModelEndoNonsoy
+using .AnalysisEndoNonsoy
+import .ModelEndoNonsoy: params, run_scenario, extract_solution, is_solved_and_feasible;
 using JLD2;
 using JuMP;
 
-const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results_endo_nonsoy"
+include(joinpath(@__DIR__, "..", "..", "main", "paths.jl"))
+using .Paths
+const OUT = Paths.variant("endo_nonsoy")
+const OUTPUT_DIR = OUT.data
 
 
 # =================================================================================
@@ -54,7 +56,7 @@ function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.00
         mid = (low + high) / 2.0
         config = (t=0.0, θ_avi=mid, σ=0.0, p=0.0, carbon_tax_scope=:aviation,
             use_ci_threshold=true, recognize_cs=true)
-        model = SAFModel.build_unified_model(params, config)
+        model = ModelEndoNonsoy.build_unified_model(params, config)
         optimize!(model)
         !is_solved_and_feasible(model) && (high=mid; continue)
         total_saf = sum(value(model[:q][g]) for g in SAF_GOODS)
@@ -104,7 +106,7 @@ function find_equivalent_policies_by_emission(target_saf, params; tolerance=0.00
                     use_ci_threshold=uci, recognize_cs=true)
             end
 
-            model = SAFModel.build_unified_model(params, config)
+            model = ModelEndoNonsoy.build_unified_model(params, config)
             optimize!(model)
             !is_solved_and_feasible(model) && (high=mid; continue)
 

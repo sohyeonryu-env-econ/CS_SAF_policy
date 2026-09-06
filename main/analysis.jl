@@ -1,11 +1,17 @@
 # analysis.jl
 
-module SAFAnalysis
-import Main.SAFModel: build_unified_model, extract_solution, tax_credit_rate, FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS
+module Analysis
+import Main.ModelMkt: build_unified_model, extract_solution, saf_credit, policy_ci, FUEL_GOODS, FEEDSTOCK_GOODS, FOOD_GOODS,
+    FOSSIL_GROUPS, supply_ps
 using JLD2
 using DataFrames
 using Printf
 using JuMP
+
+# Console comparison tables are reported in metric; the model stays in US units.
+# See main/units.jl, and flip Units.METRIC there to get the US-unit tables back.
+include(joinpath(@__DIR__, "units.jl"))
+using .Units
 
 const SCC = 190
 const POL = [:carbontax, :rfs, :lcfs, :taxcredit]
@@ -27,6 +33,8 @@ function calculate_implicit_taxes(solution, params, config)
     θ_avi = config.θ_avi
     σ = config.σ
     p = config.p
+    use_ci_threshold = config.use_ci_threshold
+    recognize_cs = config.recognize_cs
 
     # Get coefficients
     delta = params.coeff.delta
@@ -41,6 +49,23 @@ function calculate_implicit_taxes(solution, params, config)
     # Aviation fuels
     AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    CS_PATHS = [:saf_atj_cs, :saf_hefa_cs]
+
+    # ── Eligibility must mirror build_unified_model's policy_adjustment exactly. ──
+    # These implicit taxes feed calculate_gov_revenue_change, so any mismatch means the
+    # equilibrium is solved under one set of policy prices and welfare is scored under
+    # another. Keep these predicates identical to the ones in model_mkt.jl.
+    #
+    # RFS and LCFS keep the old two-part rule (CI threshold AND verification of CS). The tax
+    # credit does NOT: it is now paid on the perceived CI, so an unverified CS pathway receives
+    # its conventional counterpart's credit rather than nothing, and conventional ATJ receives a
+    # credit unless the CI threshold screens it out. That is `saf_credit`, imported from
+    # ModelMkt so the two files cannot drift.
+    saf_eligible(g) = (!use_ci_threshold || delta[g] <= 0.5 * delta[:jet_fuel]) &&
+                      (recognize_cs || g ∉ CS_PATHS)
+
+    # Carbon tax base: unverified CS is taxed as its conventional counterpart.
+    tax_base(g) = policy_ci(g, config, delta)
 
     # Initialize results
     implicit_tax = Dict(g => Dict(
@@ -53,22 +78,26 @@ function calculate_implicit_taxes(solution, params, config)
 
     for g in AVIATION_FUELS
         # 1. Carbon tax component
-        implicit_tax[g][:carbon_tax] = t * delta[g]
+        implicit_tax[g][:carbon_tax] = t * tax_base(g)
 
         # 2. RFS aviation component
         if g == :jet_fuel
             implicit_tax[g][:rfs_avi] = γ_avi * θ_avi
         else  # SAF goods
-            implicit_tax[g][:rfs_avi] = (delta[g] <= 0.5 * delta[:jet_fuel]) ? -γ_avi * 1.6 : 0.0
+            implicit_tax[g][:rfs_avi] = saf_eligible(g) ? -γ_avi * 1.6 : 0.0
         end
 
-        # 3. LCFS component
-        implicit_tax[g][:lcfs] = -μ * ((1 - σ) * delta[:jet_fuel] - delta[g])
+        # 3. LCFS component. Ineligible SAF sits outside the LCFS pool entirely:
+        #    it generates neither credits nor deficits (see the LCFS constraint).
+        implicit_tax[g][:lcfs] =
+            g == :jet_fuel ? -μ * ((1 - σ) * delta[:jet_fuel] - delta[g]) :
+            saf_eligible(g) ? -μ * ((1 - σ) * delta[:jet_fuel] - delta[g]) : 0.0
 
-        # 4. Tax credit component (SAF only)
-        if g != :jet_fuel
-            implicit_tax[g][:tax_credit] = -tax_credit_rate(delta_mj[g], baselineCI, p)
-        end
+        # 4. Tax credit component. Negative because it is a subsidy. Conventional ATJ is now
+        #    included (it earns p*(δ_jet - δ_atj_conv) whenever no CI threshold screens it out);
+        #    under the old 45Z rate function it was silently zero, which is why it never appeared
+        #    as a subsidy in this table.
+        implicit_tax[g][:tax_credit] = -saf_credit(g, config, params.coeff)
 
         # Total
         implicit_tax[g][:total] = (
@@ -142,7 +171,7 @@ function make_implicit_tax_table(implicit_taxes, params; scenarios=nothing, excl
         push!(df.Fuel, labels[g])
         for s in scenario_list
             v = (haskey(implicit_taxes, s) && !isnothing(implicit_taxes[s])) ?
-                implicit_taxes[s][g][get(scenario_tax_type, s, :total)] : 0.0
+                Units.price_gal_to_L(implicit_taxes[s][g][get(scenario_tax_type, s, :total)]) : 0.0
             push!(df[!, String(s)], v)
         end
     end
@@ -158,25 +187,29 @@ function make_production_table(solutions, params; scenarios=nothing)
         df[!, s] = Float64[]
     end
 
+    # Fuels are billion gallons -> billion liters. Corn feedstock is billion bushels and soy
+    # is billion lb of OIL, both -> MMT. DDGS is in corn-bushel equivalents, so it takes the
+    # corn factor.
     for g in FUEL_GOODS
         push!(df.Product, labels[g])
         for s in scenario_list
-            push!(df[!, s], solutions[s].q[g])
+            push!(df[!, s], Units.gal_to_L(solutions[s].q[g]))
         end
     end
 
     feedstock_goods = [:feedstock_corn_n, :feedstock_corn_cs, :feedstock_soy_n, :feedstock_soy_cs]
     feedstock_keys = [:corn_n, :corn_cs, :soy_n, :soy_cs]
-    for (g, key) in zip(feedstock_goods, feedstock_keys)
+    feedstock_conv = [Units.bu_to_Mt, Units.bu_to_Mt, Units.lb_to_Mt, Units.lb_to_Mt]
+    for (g, key, cv) in zip(feedstock_goods, feedstock_keys, feedstock_conv)
         push!(df.Product, labels[g])
         for s in scenario_list
-            push!(df[!, s], solutions[s].q_feedstock[key])
+            push!(df[!, s], cv(solutions[s].q_feedstock[key]))
         end
     end
 
     push!(df.Product, "DDGS")
     for s in scenario_list
-        push!(df[!, s], solutions[s].ddgs)
+        push!(df[!, s], Units.bu_to_Mt(solutions[s].ddgs))
     end
 
     push!(df.Product, "Soymeal Production (MMT)")
@@ -194,8 +227,11 @@ function make_demand_table(solutions; scenarios=nothing)
         Soyoil=Float64[], Soymeal=Float64[])
     for s in scenario_list
         sol = solutions[s]
-        push!(df, (String(s), sol.x[:avi], sol.x[:gas], sol.x[:die],
-            sol.x[:corn], sol.x[:corn] - sol.ddgs, sol.x[:soyoil], sol.x[:soymeal]))
+        push!(df, (String(s),
+            Units.mile_to_km(sol.x[:avi]), Units.mile_to_km(sol.x[:gas]),
+            Units.mile_to_km(sol.x[:die]),
+            Units.bu_to_Mt(sol.x[:corn]), Units.bu_to_Mt(sol.x[:corn] - sol.ddgs),
+            Units.lb_to_Mt(sol.x[:soyoil]), sol.x[:soymeal]))
     end
     return df
 end
@@ -207,9 +243,13 @@ function make_price_table(solutions; scenarios=nothing)
         ConvSoy=Float64[], CSSoy=Float64[], Soymeal=Float64[])
     for s in scenario_list
         sol = solutions[s]
-        push!(df, (String(s), sol.p_c[:avi], sol.p_c[:gas], sol.p_c[:die],
-            sol.p_f[:feedstock_corn_n], sol.p_f[:feedstock_corn_cs],
-            sol.p_f[:feedstock_soy_n], sol.p_f[:feedstock_soy_cs],
+        push!(df, (String(s),
+            Units.price_mile_to_km(sol.p_c[:avi]), Units.price_mile_to_km(sol.p_c[:gas]),
+            Units.price_mile_to_km(sol.p_c[:die]),
+            Units.price_bu_to_t(sol.p_f[:feedstock_corn_n]),
+            Units.price_bu_to_t(sol.p_f[:feedstock_corn_cs]),
+            Units.price_lb_to_t(sol.p_f[:feedstock_soy_n]),
+            Units.price_lb_to_t(sol.p_f[:feedstock_soy_cs]),
             sol.p_c[:soymeal]))
     end
     return df
@@ -228,10 +268,11 @@ function make_land_table(solutions, params; scenarios=nothing)
         sn = (1 - omega) * sol.l_n
         cc = omega * sol.l_cs
         sc = (1 - omega) * sol.l_cs
-        push!(df, (String(s), 1000cn, 1000cc, 1000(cn + cc),
-            1000sn, 1000sc, 1000(sn + sc),
-            1000sol.l_n, 1000sol.l_cs, 1000(sol.l_n + sol.l_cs),
-            sol.duals.r_land))
+        ac(x) = Units.acre_to_ha(1000x)     # B acre -> M acre -> M ha
+        push!(df, (String(s), ac(cn), ac(cc), ac(cn + cc),
+            ac(sn), ac(sc), ac(sn + sc),
+            ac(sol.l_n), ac(sol.l_cs), ac(sol.l_n + sol.l_cs),
+            Units.price_acre_to_ha(sol.duals.r_land)))
     end
     return df
 end
@@ -386,10 +427,120 @@ function display_ps_land_changes(ps_land_changes; scenarios=nothing,
     println("\n" * "="^130)
 end
 
+"""
+    nonsoy_feedstock_use(sol, params)
+
+Total non-soy feedstock consumed (billion lb): Σ α_g q_g over the three non-soy goods.
+This is the left-hand quantity in the non-soy capacity constraint.
+"""
+function nonsoy_feedstock_use(sol, params)
+    α = params.coeff.alpha
+    return α[:saf_hefa_nonsoy] * sol.q[:saf_hefa_nonsoy] +
+           α[:biodiesel_nonsoy] * sol.q[:biodiesel_nonsoy] +
+           α[:rd_nonsoy] * sol.q[:rd_nonsoy]
+end
+
+"""
+    calculate_ps_nonsoy_changes(solutions, solution_sq, params; scenarios=nothing)
+
+Non-soy feedstock producer surplus (scarcity rent) changes.
+
+Supply is perfectly elastic at `nonsoy_feedstock_price` c up to `nonsoy_capacity` K,
+then vertical. Refiners face c + λ, where λ = λ_nonsoy_capacity is the multiplier on
+`K - Σ α_g q_g ≥ 0`. Hence:
+
+  - λ = 0 (capacity slack): market price = c = MC, no inframarginal unit is cheaper
+    than the marginal one, so the rent is exactly zero.
+  - λ > 0 (capacity binds): price must rise to c + λ to ration demand down to K.
+    All K units still cost c to supply, so the rent is the rectangle λ * K.
+
+Rent is evaluated as λ * (feedstock actually used); complementarity makes this equal
+to λ * K whenever λ > 0, but using realised use is robust to solver slack.
+
+ΔPS = rent_policy - rent_sq.
+
+NOTE ON INTERPRETATION: this rent accrues to whoever owns the scarce non-soy feedstock
+(renderers, UCO collectors, importers). If that supply is largely imported, a
+US-only welfare measure should exclude it, but then say so explicitly rather than
+leaving the term silently at zero.
+"""
+function calculate_ps_nonsoy_changes(solutions, solution_sq, params; scenarios=nothing)
+    scenario_list = isnothing(scenarios) ? collect(keys(solutions)) : scenarios
+    scenario_list = filter(s -> s != :statusquo, scenario_list)
+
+    K = params.coeff.nonsoy_capacity
+    c = params.coeff.nonsoy_feedstock_price
+
+    λ_sq = solution_sq.duals.λ_nonsoy_capacity
+    use_sq = nonsoy_feedstock_use(solution_sq, params)
+    rent_sq = λ_sq * use_sq
+
+    ps_nonsoy_changes = Dict()
+    for s in scenario_list
+        sol = solutions[s]
+        λ_pol = sol.duals.λ_nonsoy_capacity
+        use_pol = nonsoy_feedstock_use(sol, params)
+        rent_pol = λ_pol * use_pol
+
+        ps_nonsoy_changes[s] = (
+            ps_change=clean_small(rent_pol - rent_sq),
+            λ_sq=clean_small(λ_sq),
+            λ_policy=clean_small(λ_pol),
+            use_sq=clean_small(use_sq),
+            use_policy=clean_small(use_pol),
+            rent_sq=clean_small(rent_sq),
+            rent_policy=clean_small(rent_pol),
+            price_sq=clean_small(c + λ_sq),
+            price_policy=clean_small(c + λ_pol),
+            binding=(λ_pol > 1e-10),
+            capacity=K
+        )
+    end
+    return ps_nonsoy_changes
+end
+
+function display_ps_nonsoy_changes(ps_nonsoy_changes; scenarios=nothing,
+    title="NON-SOY FEEDSTOCK PRODUCER SURPLUS CHANGES (billion \$)")
+    scenario_list = isnothing(scenarios) ? collect(keys(ps_nonsoy_changes)) : scenarios
+    println("\n" * "="^130)
+    println(title)
+    println("="^130)
+    if isempty(scenario_list)
+        println("(no policy scenarios)")
+        println("="^130)
+        return nothing
+    end
+    df = DataFrame(Metric=String[])
+    for s in scenario_list
+        df[!, s] = Float64[]
+    end
+    for (mname, mkey) in [("λ non-soy capacity (\$/lb)", :λ_policy),
+        ("Effective price c+λ (\$/lb)", :price_policy),
+        ("Feedstock used (billion lb)", :use_policy),
+        ("Rent level (billion \$)", :rent_policy),
+        ("PS Change (Non-soy)", :ps_change)]
+        push!(df.Metric, mname)
+        for s in scenario_list
+            push!(df[!, s], Float64(getfield(ps_nonsoy_changes[s], mkey)))
+        end
+    end
+    show(df, allrows=true)
+    any_binding = any(ps_nonsoy_changes[s].binding for s in scenario_list)
+    println("\n(capacity K = $(ps_nonsoy_changes[first(scenario_list)].capacity) billion lb; " *
+            (any_binding ? "binds in at least one scenario → rent is non-zero)" :
+             "slack in all scenarios → rent is zero by construction)"))
+    println("="^130)
+end
+
 function calculate_gov_revenue_change(solution_policy, implicit_taxes_policy, scenario)
     AVIATION_FUELS = [:jet_fuel, :saf_atj_conv, :saf_atj_cs,
         :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
-    ELIGIBLE_SAF = [:saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
+    # Sum the tax credit over ALL SAF goods, not a hardcoded "eligible" list.
+    # calculate_implicit_taxes now returns 0 for pathways the configuration makes
+    # ineligible, so eligibility is decided in exactly one place. The old hardcoded
+    # list ignored use_ci_threshold / recognize_cs and so credited pathways that the
+    # equilibrium never actually paid a credit to.
+    ALL_SAF = [:saf_atj_conv, :saf_atj_cs, :saf_hefa_conv, :saf_hefa_cs, :saf_hefa_nonsoy]
     scenario_str = String(scenario)
     is_carbontax = startswith(scenario_str, "carbontax")
     is_taxcredit = startswith(scenario_str, "taxcredit")
@@ -401,7 +552,7 @@ function calculate_gov_revenue_change(solution_policy, implicit_taxes_policy, sc
             gov_revenue += implicit_taxes_policy[f][:carbon_tax] * solution_policy.q[f]
         end
     else
-        for saf in ELIGIBLE_SAF
+        for saf in ALL_SAF
             if haskey(implicit_taxes_policy, saf) && haskey(implicit_taxes_policy[saf], :tax_credit)
                 gov_revenue += implicit_taxes_policy[saf][:tax_credit] * solution_policy.q[saf]
             end
@@ -482,24 +633,80 @@ function display_environmental_benefits(env_benefits, scc; scenarios=nothing,
     println("\n" * "="^130)
 end
 
+"""
+    calculate_ps_fossil_changes(solutions, solution_sq, params; scenarios)
+
+Producer surplus of the three fossil refining sectors, MC(Q)Q - integral of MC, relative to the
+status quo.
+
+Under the perfectly elastic benchmark (c1 = 0 below the kink) this term is identically zero,
+which is why the decomposition used to attribute all rent to land and non-soy feedstock.  With
+constant-elasticity fossil supply it is not: an aviation policy that displaces jet fuel lowers the
+jet price and destroys refiner rent, and that loss is a real part of the welfare change.  The
+per-group formula is `ModelMkt.supply_ps`, so this cannot drift from the marginal cost the
+equilibrium actually faced.
+
+The three groups each contain exactly one good, so Q_m = q_g.
+"""
+function calculate_ps_fossil_changes(solutions, solution_sq, params; scenarios=nothing)
+    scenario_list = isnothing(scenarios) ? collect(keys(solutions)) : scenarios
+    scenario_list = filter(s -> s != :statusquo, scenario_list)
+    fc = params.supply.fuel
+
+    ps_of(sol) = Dict(g => supply_ps(fc[g], sol.q[g]) for g in FOSSIL_GROUPS)
+    sq = ps_of(solution_sq)
+
+    out = Dict()
+    for s in scenario_list
+        pol = ps_of(solutions[s])
+        out[s] = (
+            ps_change=clean_small(sum(values(pol)) - sum(values(sq))),
+            by_fuel=Dict(g => clean_small(pol[g] - sq[g]) for g in FOSSIL_GROUPS),
+            ps_sq=clean_small(sum(values(sq))),
+            ps_policy=clean_small(sum(values(pol))),
+        )
+    end
+    return out
+end
+
+"""
+    calculate_total_welfare(cs_changes, ps_land_changes, gr_changes, env_benefits;
+                            ps_nonsoy_changes=nothing, ps_fossil_changes=nothing, scenarios=nothing)
+
+Producer surplus is reported in four pieces:
+  ps_land_change   land rent (upward-sloping land supply)
+  ps_nonsoy_change non-soy feedstock scarcity rent (λ_nonsoy_capacity * use)
+  ps_fossil_change fossil refining rent (constant-elasticity jet/gasoline/diesel supply)
+  ps_total_change  the sum, which is what enters private surplus
+
+The two rent keywords are keywords so pre-existing calls still run, but they will silently treat
+the corresponding rent as zero. Pass both whenever the non-soy capacity constraint can bind or
+fossil supply slopes upward.
+"""
 function calculate_total_welfare(cs_changes, ps_land_changes, gr_changes, env_benefits;
-    scenarios=nothing)
+    ps_nonsoy_changes=nothing, ps_fossil_changes=nothing, scenarios=nothing)
     scenario_list = isnothing(scenarios) ? collect(keys(cs_changes)) : scenarios
     scenario_list = filter(s -> s != :statusquo, scenario_list)
     welfare_summary = Dict()
     for s in scenario_list
         cs = cs_changes[s][:total]
-        ps = ps_land_changes[s].ps_change
+        ps_land = ps_land_changes[s].ps_change
+        ps_nonsoy = isnothing(ps_nonsoy_changes) ? 0.0 : ps_nonsoy_changes[s].ps_change
+        ps_fossil = isnothing(ps_fossil_changes) ? 0.0 : ps_fossil_changes[s].ps_change
+        ps_total = ps_land + ps_nonsoy + ps_fossil
         gr = gr_changes[s].total
         env = env_benefits[s].total_benefit
         welfare_summary[s] = (
             cs_change=clean_small(cs),
             cs_by_sector=cs_changes[s],
-            ps_land_change=clean_small(ps),
+            ps_land_change=clean_small(ps_land),
+            ps_nonsoy_change=clean_small(ps_nonsoy),
+            ps_fossil_change=clean_small(ps_fossil),
+            ps_total_change=clean_small(ps_total),
             gr_change=clean_small(gr),
             env_benefit=clean_small(env),
-            private_surplus=clean_small(cs + ps + gr),
-            social_welfare=clean_small(cs + ps + gr + env)
+            private_surplus=clean_small(cs + ps_total + gr),
+            social_welfare=clean_small(cs + ps_total + gr + env)
         )
     end
     return welfare_summary
@@ -515,7 +722,10 @@ function display_welfare_summary(welfare_summary; scenarios=nothing, title="WELF
         df[!, s] = Float64[]
     end
     for (mname, mkey) in [("CS Change (a)", :cs_change),
-        ("PS Change (b)", :ps_land_change),
+        ("PS Land (b1)", :ps_land_change),
+        ("PS Non-soy (b2)", :ps_nonsoy_change),
+        ("PS Fossil (b3)", :ps_fossil_change),
+        ("PS Total (b=b1+b2+b3)", :ps_total_change),
         ("Gov Revenue (c)", :gr_change),
         ("Env Benefit (d)", :env_benefit),
         ("Private Surplus (∆=a+b+c)", :private_surplus),
@@ -593,9 +803,9 @@ function display_comparison_tables(solutions, params, policy_configs;
         policy_labels = Dict(
             :statusquo => ("Status Quo", "No Policy"),
             :carbontax => ("Carbon Tax", "Carbon Tax (\$/ton CO2e)"),
-            :rfs => ("RFS Aviation", "Mandate Share"),
-            :lcfs => ("LCFS", "CI Reduction (σ)"),
-            :taxcredit => ("Tax Credit", "Rate (\$/gal)")
+            :rfs => ("Volumetric mandate", "Mandate Share"),
+            :lcfs => ("CI standard", "CI Reduction (σ)"),
+            :taxcredit => ("Tax Credit", "Rate (\$/ton CO2e)")
         )
         println("\n--- Policy Parameters ---")
 
@@ -656,12 +866,12 @@ function display_comparison_tables(solutions, params, policy_configs;
     implicit_taxes = calculate_all_implicit_taxes(solutions, params, policy_configs)
 
     for (table_name, table) in [
-        ("Implicit Taxes/Subsidies (\$/gallon)",
+        ("Implicit Taxes/Subsidies ($(Units.METRIC ? "\$/liter" : "\$/gallon"))",
             make_implicit_tax_table(implicit_taxes, params; scenarios=scenarios, exclude_statusquo=true)),
         ("Production", make_production_table(solutions, params; scenarios=scenarios)),
         ("Demand", make_demand_table(solutions; scenarios=scenarios)),
         ("Prices", make_price_table(solutions; scenarios=scenarios)),
-        ("Land Use (Million Acres)", make_land_table(solutions, params; scenarios=scenarios)),
+        ("Land Use (Million $(Units.METRIC ? "Hectares" : "Acres"))", make_land_table(solutions, params; scenarios=scenarios)),
         ("Emissions (MMT CO2e)", make_emissions_table(solutions, params; scenarios=scenarios)),
         ("Dual Variables", make_duals_table(solutions; scenarios=scenarios))
     ]
@@ -672,7 +882,7 @@ function display_comparison_tables(solutions, params, policy_configs;
     println("\n" * "="^130)
 
     # ── Welfare ───────────────────────────────────────────────────────────────
-    # status quo는 항상 SQ_CONFIG로 새로 실행
+    # The status quo is always re-solved with SQ_CONFIG
     println("\nComputing status quo for welfare comparison...")
     sq_model = build_unified_model(params, SQ_CONFIG)
     optimize!(sq_model)
@@ -697,15 +907,20 @@ function display_comparison_tables(solutions, params, policy_configs;
 
     cs_changes = calculate_cs_changes(enriched, enriched_sq, params; scenarios=pol_scenarios)
     ps_land = calculate_ps_land_changes(enriched, enriched_sq, params; scenarios=pol_scenarios)
+    ps_nonsoy = calculate_ps_nonsoy_changes(enriched, enriched_sq, params; scenarios=pol_scenarios)
+    ps_fossil = calculate_ps_fossil_changes(enriched, enriched_sq, params; scenarios=pol_scenarios)
     gr_changes = calculate_gr_changes(enriched; scenarios=pol_scenarios)
     env_benefits = calculate_environmental_benefit(enriched, enriched_sq, SCC; scenarios=pol_scenarios)
-    welfare_summary = calculate_total_welfare(cs_changes, ps_land, gr_changes, env_benefits; scenarios=pol_scenarios)
+    welfare_summary = calculate_total_welfare(cs_changes, ps_land, gr_changes, env_benefits;
+        ps_nonsoy_changes=ps_nonsoy, ps_fossil_changes=ps_fossil, scenarios=pol_scenarios)
     aac_results = calculate_average_abatement_cost(welfare_summary, enriched, enriched_sq; scenarios=pol_scenarios)
 
     display_cs_changes(cs_changes;
         scenarios=pol_scenarios, title="$title: CS CHANGES (billion \$)")
     display_ps_land_changes(ps_land;
         scenarios=pol_scenarios, title="$title: LAND PS CHANGES (billion \$)")
+    display_ps_nonsoy_changes(ps_nonsoy;
+        scenarios=pol_scenarios, title="$title: NON-SOY FEEDSTOCK PS CHANGES (billion \$)")
     display_gr_changes(gr_changes;
         scenarios=pol_scenarios, title="$title: GOVERNMENT REVENUE (billion \$)")
     display_environmental_benefits(env_benefits, SCC;
@@ -718,6 +933,8 @@ function display_comparison_tables(solutions, params, policy_configs;
     return (
         cs_changes=cs_changes,
         ps_land=ps_land,
+        ps_nonsoy=ps_nonsoy,
+        ps_fossil=ps_fossil,
         gr_changes=gr_changes,
         env_benefits=env_benefits,
         welfare_summary=welfare_summary,
@@ -736,10 +953,12 @@ export display_comparison_tables,
     clean_small,
     calc_cs_change, calculate_cs_changes, make_cs_change_table, display_cs_changes,
     calculate_ps_land_changes, display_ps_land_changes,
+    calculate_ps_nonsoy_changes, display_ps_nonsoy_changes, nonsoy_feedstock_use,
+    calculate_ps_fossil_changes,
     calculate_gov_revenue_change, calculate_gr_changes, display_gr_changes,
     calculate_environmental_benefit, display_environmental_benefits,
     calculate_total_welfare, display_welfare_summary,
     calculate_average_abatement_cost, display_aac_analysis,
     SCC, POL, SQ_CONFIG
 
-end # module SAFAnalysis
+end # module Analysis

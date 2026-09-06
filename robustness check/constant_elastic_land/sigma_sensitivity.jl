@@ -2,10 +2,18 @@
 cd(@__DIR__)
 println("Working directory: ", pwd())
 
-include(joinpath(@__DIR__, "SAFModel.jl"))
-include(joinpath(@__DIR__, "analysis.jl"))
-using .SAFModel
-import .SAFModel: params, build_unified_model, extract_solution, is_solved_and_feasible
+include(joinpath(@__DIR__, "model_cet_land.jl"))
+include(joinpath(@__DIR__, "analysis_cet_land.jl"))
+
+# Output paths. This file only makes figures.
+# The definition has to sit at the top of the file: savefig calls above the second
+# section (the sigma trajectory) already use these constants.
+include(joinpath(@__DIR__, "..", "..", "main", "paths.jl"))
+using .Paths
+const OUT = Paths.variant("cet_land")
+const OUTPUT_DIR = OUT.figures
+using .ModelCETLand
+import .ModelCETLand: params, build_unified_model, extract_solution, is_solved_and_feasible
 using JuMP, PATHSolver, DataFrames, Printf
 
 # Fix at RFS mandate = 0.15
@@ -63,7 +71,7 @@ for σ_val in sigma_values
     end
 end
 
-# DataFrame으로 정리
+# Collect into a DataFrame
 df = DataFrame(results)
 println("\n===== σ_cet sensitivity: RFS θ_avi = 0.15 =====")
 println(df)
@@ -118,7 +126,7 @@ begin
         alpha=0.85,
         bottom=atj_conv_vals .+ hefa_conv_vals .+ atj_cs_vals)
 end
-# 저장
+# Save
 #savefig(p, joinpath(OUTPUT_DIR, "saf_by_sigma_rfs.png"))
 #println("✓ Saved saf_by_sigma_rfs.png")
 #display(p)
@@ -148,7 +156,7 @@ begin
         linewidth=0.0,
         legend=false,
         size=(850, 560),
-        title="Feedstock prices by σ_cet — RFS (θ_avi = 0.15)",
+        title="Feedstock prices by σ_cet: RFS (θ_avi = 0.15)",
         background_color=:white,
         framestyle=:box,
         gridcolor=:lightgrey,
@@ -166,7 +174,7 @@ begin
         linewidth=0.0,
         legend=false)
 
-    # 오른쪽 축 (soy, $/lb)
+    # Right axis (soy, $/lb)
     p_right = twinx(p_left)
 
     plot!(p_right, sigma_vals, p_soy_n,
@@ -233,7 +241,7 @@ begin
         linewidth=1.5,
         markerstrokewidth=0,
         size=(850, 500),
-        title="Total land supply by σ_cet — RFS (θ_avi = 0.15)",
+        title="Total land supply by σ_cet: RFS (θ_avi = 0.15)",
         background_color=:white,
         framestyle=:box,
         gridcolor=:lightgrey,
@@ -267,26 +275,25 @@ println("✓ Saved land_by_sigma_rfs.png")
 display(p_land)
 
 # sigma_trajectory.jl
-# σ_cet별로 r_corn, r_soy, l_corn, l_soy가 어떻게 변하는지 trajectory 분석
+# Trajectory analysis: how r_corn, r_soy, l_corn and l_soy move with sigma_cet
 cd(@__DIR__)
 println("Working directory: ", pwd())
 
-include(joinpath(@__DIR__, "SAFModel.jl"))
-include(joinpath(@__DIR__, "analysis.jl"))
-using .SAFModel
-import .SAFModel: params, build_unified_model, extract_solution, is_solved_and_feasible
+include(joinpath(@__DIR__, "model_cet_land.jl"))
+include(joinpath(@__DIR__, "analysis_cet_land.jl"))
+using .ModelCETLand
+import .ModelCETLand: params, build_unified_model, extract_solution, is_solved_and_feasible
 using JuMP, PATHSolver, DataFrames, Printf, Plots
 
-const OUTPUT_DIR = "/Users/sohyeonserenryu/Library/CloudStorage/OneDrive-UniversityofIllinois-Urbana/CS SAF policy/output/results_cet_land"
 
 # =================================================================================
-# 0. 설정
+# 0. Setup
 # =================================================================================
 
-# Policy 고정 (RFS θ_avi = 0.15)
+# Policy fixed (RFS theta_avi = 0.15)
 policy_rfs = (t=0.0, θ_avi=0.15, σ=0.0, p=0.0, carbon_tax_scope=:aviation)
 
-# σ_cet 범위: 0부터 1.0까지 촘촘하게
+# sigma_cet range: dense from 0 to 1.0
 sigma_values = vcat(
     0.0,
     0.001, 0.005,
@@ -295,7 +302,7 @@ sigma_values = vcat(
 )
 
 # =================================================================================
-# 1. σ별 실행 및 결과 수집
+# 1. Run by sigma and collect results
 # =================================================================================
 
 results = []
@@ -314,12 +321,12 @@ for σ_val in sigma_values
         println("  ✓ solved")
         sol = extract_solution(model, :rfs)
 
-        # r_corn, r_soy는 CET 모델에서만 존재
+        # r_corn and r_soy exist only in the CET model
         r_corn_val = σ_val > 0 ? value(model[:r_corn]) : NaN
         r_soy_val = σ_val > 0 ? value(model[:r_soy]) : NaN
         r_land_val = sol.duals.r_land
 
-        # l_corn, l_soy: CET에서는 expression으로 존재
+        # l_corn and l_soy are expressions in the CET model
         l_n_corn_val = σ_val > 0 ? value(model[:l_n_corn]) : sol.l_n * 0.54
         l_cs_corn_val = σ_val > 0 ? value(model[:l_cs_corn]) : sol.l_cs * 0.54
         l_n_soy_val = σ_val > 0 ? value(model[:l_n_soy]) : sol.l_n * 0.46
@@ -329,7 +336,7 @@ for σ_val in sigma_values
         l_soy_total = l_n_soy_val + l_cs_soy_val
         l_total = sol.l_n + sol.l_cs
 
-        # 실제 share 계산
+        # Actual shares
         corn_share = l_total > 0 ? l_corn_total / l_total : NaN
         soy_share = l_total > 0 ? l_soy_total / l_total : NaN
 
@@ -379,7 +386,7 @@ println("\n===== Failed σ values =====")
 println(df_fail[:, [:sigma, :status]])
 
 # =================================================================================
-# 2. 플롯
+# 2. Plots
 # =================================================================================
 
 gr()
@@ -403,7 +410,7 @@ plot!(p1, df_ok.sigma, df_ok.r_soy,
 plot!(p1, df_ok.sigma, df_ok.r_land,
     label="r_land", color=:navy, marker=:diamond, markersize=3,
     linewidth=2.0, linestyle=:dash, markerstrokewidth=0)
-# 실패 구간 표시
+# Mark the stretches that failed
 for row in eachrow(df_fail)
     vline!(p1, [row.sigma], color=:red, alpha=0.3, linewidth=1, label="")
 end
@@ -496,7 +503,7 @@ for row in eachrow(df_fail)
 end
 display(p3)
 
-# ── 저장 ──────────────────────────────────────────────────────────────────────
+# ── Save ──────────────────────────────────────────────────────────────────────
 savefig(p1, joinpath(OUTPUT_DIR, "traj_land_rent.png"))
 savefig(p2, joinpath(OUTPUT_DIR, "traj_rent_ratio.png"))
 savefig(p3, joinpath(OUTPUT_DIR, "traj_land_share.png"))

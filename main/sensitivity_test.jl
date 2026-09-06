@@ -4,12 +4,14 @@
 cd(@__DIR__)
 println("Working directory: ", pwd())
 
-include(joinpath(@__DIR__, "SAFModel.jl"))
+include(joinpath(@__DIR__, "model_mkt.jl"))
 include(joinpath(@__DIR__, "analysis.jl"))
+include(joinpath(@__DIR__, "units.jl"))     # metric reporting; model stays in US units
+using .Units
 
-import .SAFModel: params, build_unified_model, extract_solution, is_solved_and_feasible
-import .SAFAnalysis: calculate_emissions_detail, calculate_implicit_taxes,
-    calculate_cs_changes, calculate_ps_land_changes,
+import .ModelMkt: params, build_unified_model, extract_solution, is_solved_and_feasible
+import .Analysis: calculate_emissions_detail, calculate_implicit_taxes,
+    calculate_cs_changes, calculate_ps_land_changes, calculate_ps_nonsoy_changes,
     calculate_gr_changes, calculate_environmental_benefit,
     calculate_total_welfare
 using DataFrames, Printf, Plots, JuMP, Statistics
@@ -24,9 +26,9 @@ function make_demand_params(sigma, p0, x0, p_high)
     return (k=1 / sigma, A=A_val, s=(p_high / A_val)^sigma)
 end
 
-# p0=0.04, x0=1204.79, p_high=10.0
+# p0=0.04, x0=1204.79, p_high=500.0  (choke price; must match model_mkt.jl's :avi entry)
 function build_params_with_avi_elasticity(base_params, sigma_avi)
-    new_avi = make_demand_params(sigma_avi, 0.04, 1204.79, 10.0)
+    new_avi = make_demand_params(sigma_avi, 0.04, 1204.79, 500.0)
     new_demand = copy(base_params.demand)
     new_demand[:avi] = new_avi
     return merge(base_params, (demand=new_demand,))
@@ -40,7 +42,7 @@ const POLICY_RANGES_SENS = (
     t=0:1.0:700,
     θ_avi=0:0.003:0.9,
     σ=0.0:0.001:0.5,
-    p=0:0.2:100.0
+    p=0:10.0:5000.0     # tax credit ($/ton CO2e): credit = p*(δ_jet - δ_g)
 )
 
 function create_policy_scenarios_sens()
@@ -122,9 +124,10 @@ function welfare_and_mac_for_elasticity(solutions, p_elastic; scc=190.0)
 
     cs = calculate_cs_changes(valid, sq, p_elastic)
     ps = calculate_ps_land_changes(valid, sq, p_elastic)
+    ps_ns = calculate_ps_nonsoy_changes(valid, sq, p_elastic)
     gr = calculate_gr_changes(valid)
     env = calculate_environmental_benefit(valid, sq, scc)
-    welf = calculate_total_welfare(cs, ps, gr, env)
+    welf = calculate_total_welfare(cs, ps, gr, env; ps_nonsoy_changes=ps_ns)
 
     groups = (
         carbontax=[k for k in keys(valid) if startswith(String(k), "carbontax_")],
@@ -181,8 +184,8 @@ function plot_mac_panels(results_by_elasticity, elasticities;
 
     bg = RGB(0.96, 0.96, 0.94)
     policy_colors = [(:carbontax, :blue), (:rfs, :red), (:lcfs, :green), (:taxcredit, :purple)]
-    policy_labels = Dict(:carbontax => "Carbon Tax", :rfs => "RFS Aviation",
-        :lcfs => "LCFS", :taxcredit => "Tax Credit")
+    policy_labels = Dict(:carbontax => "Carbon Tax", :rfs => "Volumetric mandate",
+        :lcfs => "CI standard", :taxcredit => "Tax Credit")
     key = use_social ? :mac_social : :mac_private
 
     function make_panel(σ_avi, show_y)
@@ -191,8 +194,8 @@ function plot_mac_panels(results_by_elasticity, elasticities;
 
         p = plot(title="ε = $(σ_avi)",
             titlefontsize=22, titlefontweight=:bold,
-            ylabel=show_y ? "MAC (\$/ton CO₂)" : "",
-            xlabel="Cumulative Abatement (Billion tons CO₂)",
+            ylabel=show_y ? "MAC (\$/tonne CO₂)" : "",
+            xlabel="Cumulative Abatement (B tonne CO₂e)",
             legend=false, grid=true,
             xlims=(0, max_ab), ylims=(y_min, y_max),
             yticks=collect(-200:200.0:y_max),
@@ -243,10 +246,10 @@ function plot_aviation_stacked_grid(results_by_elasticity, elasticities;
     max_ab_policy=nothing, fig_size=(2600, 1700))
 
     policy_meta = [
-        (:carbontax, :t, "Carbon Tax (\$/ton CO₂e)"),
-        (:rfs, :θ_avi, "RFS Aviation Mandate (θ_avi)"),
-        (:lcfs, :σ, "LCFS Standard (σ)"),
-        (:taxcredit, :p, "Tax Credit (\$/gallon)"),
+        (:carbontax, :t, "Carbon Tax (\$/tonne CO₂e)"),
+        (:rfs, :θ_avi, "Volumetric mandate (θ_avi)"),
+        (:lcfs, :σ, "CI standard (σ)"),
+        (:taxcredit, :p, "Tax Credit (\$/tonne CO₂e)"),
     ]
 
     main_fuel = (:jet_fuel, "Jet Fuel", :lightgray, :black)
@@ -270,7 +273,7 @@ function plot_aviation_stacked_grid(results_by_elasticity, elasticities;
         for s in keys(res.solutions)
             sol = res.solutions[s]
             isnothing(sol) && continue
-            tot = sol.q[:jet_fuel] + sum(sol.q[g] for (g, _, _) in saf_layers)
+            tot = Units.gal_to_L(sol.q[:jet_fuel] + sum(sol.q[g] for (g, _, _) in saf_layers))
             tot > ymax && (ymax = tot)
         end
     end
@@ -289,7 +292,8 @@ function plot_aviation_stacked_grid(results_by_elasticity, elasticities;
 
         p = plot(
             xlabel=xlabel,
-            ylabel=show_y ? "Quantity (billion gallons)" : "",
+            ylabel=show_y ? (Units.METRIC ? "Quantity (billion liters)" :
+                                            "Quantity (billion gallons)") : "",
             title=show_title ? pol_title : "",
             titlefontsize=20, titlefontweight=:bold,
             legend=false,
@@ -305,13 +309,13 @@ function plot_aviation_stacked_grid(results_by_elasticity, elasticities;
 
         isempty(slist) && return p
 
-        jet = [res.solutions[s].q[:jet_fuel] for s in slist]
+        jet = [Units.gal_to_L(res.solutions[s].q[:jet_fuel]) for s in slist]
         plot!(p, xs, jet, fillrange=0, fillalpha=0.7,
             fillcolor=main_fuel[3], linewidth=1.2, color=main_fuel[4], label="")
 
         cum = copy(jet)
         for (g, _, color) in saf_layers
-            layer = [res.solutions[s].q[g] for s in slist]
+            layer = [Units.gal_to_L(res.solutions[s].q[g]) for s in slist]
             new_cum = cum .+ layer
             mask = layer .> 1e-10
             if any(mask)
@@ -377,10 +381,10 @@ function plot_share_and_rpm_stacked(results_by_elasticity, elasticities; fig_siz
     β_saf = params.coeff.beta[(:saf, :jet_fuel)]
 
     policy_meta = [
-        (:carbontax, "Carbon Tax (\$/ton CO₂e)", "Carbon Tax"),
-        (:rfs, "RFS Aviation Mandate (θ_avi)", "RFS Aviation"),
-        (:lcfs, "LCFS Standard (σ)", "LCFS"),
-        (:taxcredit, "Tax Credit (\$/gallon)", "Tax Credit"),
+        (:carbontax, "Carbon Tax (\$/tonne CO₂e)", "Carbon Tax"),
+        (:rfs, "Volumetric mandate (θ_avi)", "Volumetric mandate"),
+        (:lcfs, "CI standard (σ)", "CI standard"),
+        (:taxcredit, "Tax Credit (\$/tonne CO₂e)", "Tax Credit"),
     ]
     ela_colors = Dict(elasticities[1] => :black,
         elasticities[2] => :dodgerblue,
@@ -433,13 +437,15 @@ function plot_share_and_rpm_stacked(results_by_elasticity, elasticities; fig_siz
         push!(top, p_s)
 
         # total RPM
-        p_r = plot(xlabel=xlabel, ylabel=show_y ? "Total RPM (billion miles)" : "",
-            legend=false, grid=true, ylims=(0, 1380),
+        p_r = plot(xlabel=xlabel,
+            ylabel=show_y ? (Units.METRIC ? "Total air travel (billion passenger-km)" :
+                                            "Total RPM (billion miles)") : "",
+            legend=false, grid=true, ylims=(0, Units.mile_to_km(1380)),
             left_margin=show_y ? 16Plots.mm : 4Plots.mm,
             bottom_margin=14Plots.mm, top_margin=2Plots.mm, right_margin=8Plots.mm,
             guidefontsize=20, tickfontsize=16)
         for σ_avi in elasticities
-            xv, yv = series(pt, σ_avi, sol -> sol.x[:avi])
+            xv, yv = series(pt, σ_avi, sol -> Units.mile_to_km(sol.x[:avi]))
             isempty(xv) && continue
             plot!(p_r, xv, yv, linewidth=2.8, color=ela_colors[σ_avi])
         end
@@ -474,17 +480,17 @@ function plot_share_rpm_mac_stacked(results_by_elasticity, elasticities;
     β_saf = params.coeff.beta[(:saf, :jet_fuel)]
 
     policy_meta = [
-        (:carbontax, "Carbon Tax (\$/ton CO₂e)", "Carbon Tax"),
-        (:rfs, "RFS Aviation Mandate (θ_avi)", "RFS Aviation"),
-        (:lcfs, "LCFS Standard (σ)", "LCFS"),
-        (:taxcredit, "Tax Credit (\$/gallon)", "Tax Credit"),
+        (:carbontax, "Carbon Tax (\$/tonne CO₂e)", "Carbon Tax"),
+        (:rfs, "Volumetric mandate (θ_avi)", "Volumetric mandate"),
+        (:lcfs, "CI standard (σ)", "CI standard"),
+        (:taxcredit, "Tax Credit (\$/tonne CO₂e)", "Tax Credit"),
     ]
     ela_colors = Dict(elasticities[1] => :black,
         elasticities[2] => :dodgerblue,
         elasticities[3] => :crimson)
 
     mac_key = use_social ? :mac_social : :mac_private
-    mac_xlabel = "Abatement (M ton CO₂eq)"
+    mac_xlabel = "Abatement (Mt CO₂e)"
 
     function get_policy_x(config, pt)
         pt == :carbontax ? config.t :
@@ -523,13 +529,15 @@ function plot_share_rpm_mac_stacked(results_by_elasticity, elasticities;
         push!(top, p_s)
 
         # total RPM
-        p_r = plot(xlabel=xlabel, ylabel=show_y ? "Total RPM (billion miles)" : "",
-            legend=false, grid=true, ylims=(0, 1380),
+        p_r = plot(xlabel=xlabel,
+            ylabel=show_y ? (Units.METRIC ? "Total air travel (billion passenger-km)" :
+                                            "Total RPM (billion miles)") : "",
+            legend=false, grid=true, ylims=(0, Units.mile_to_km(1380)),
             left_margin=show_y ? 16Plots.mm : 4Plots.mm,
             bottom_margin=13Plots.mm, top_margin=6Plots.mm, right_margin=8Plots.mm,
             guidefontsize=18, tickfontsize=15)
         for σ_avi in elasticities
-            xv, yv = series(pt, σ_avi, sol -> sol.x[:avi])
+            xv, yv = series(pt, σ_avi, sol -> Units.mile_to_km(sol.x[:avi]))
             isempty(xv) && continue
             plot!(p_r, xv, yv, linewidth=2.8, color=ela_colors[σ_avi])
         end
@@ -537,7 +545,7 @@ function plot_share_rpm_mac_stacked(results_by_elasticity, elasticities;
 
         # MAC
         p_m = plot(xlabel=mac_xlabel,
-            ylabel=show_y ? "MAC (\$/ton CO₂)" : "",
+            ylabel=show_y ? "MAC (\$/tonne CO₂)" : "",
             legend=false, grid=true,
             xlims=(0, max_ab*1000), ylims=(mac_ymin, mac_ymax),
             yticks=collect(-200:200.0:mac_ymax),
